@@ -6,12 +6,10 @@
   <title>吸收光譜擬合工具 — Elliott Formula (激子 + 連續態)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-  <!-- Pyodide 瀏覽器原生 Python 運算核心 -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 min-h-screen">
 
-  <!-- 頂部標題列 -->
   <header class="bg-white border-b border-slate-200 px-6 py-3.5 shadow-sm">
     <div class="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
       <div>
@@ -71,7 +69,7 @@
         </div>
       </div>
 
-      <!-- 3. 擬合參數設定完整表格 (初始值 / 下限 / 上限 / 參與擬合) -->
+      <!-- 3. 擬合參數設定完整表格 -->
       <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-2.5">
         <div class="flex justify-between items-center border-b pb-1.5">
           <h2 class="font-bold text-xs text-slate-800">3. 擬合參數設定 (初始值 / 下限 / 上限 / 參與擬合)</h2>
@@ -85,7 +83,6 @@
           提示：Eg（能隙）與 E0（激子束縛參數）最關鍵；Γex/Γc 影響曲線寬窄；b 影響高能側形狀。
         </p>
 
-        <!-- 完整 6 參數設定表格 -->
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs border-collapse">
             <thead>
@@ -97,13 +94,10 @@
                 <th class="py-1 px-1 font-semibold text-center w-10">擬合</th>
               </tr>
             </thead>
-            <tbody id="paramTableBody" class="divide-y divide-slate-100 font-mono text-[11px]">
-              <!-- JS 動態生成 -->
-            </tbody>
+            <tbody id="paramTableBody" class="divide-y divide-slate-100 font-mono text-[11px]"></tbody>
           </table>
         </div>
 
-        <!-- 額外高階選項 -->
         <div class="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2 text-xs">
           <div>
             <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">模型維度:</label>
@@ -139,7 +133,6 @@
     <!-- ================= 右側面板：圖表與結果 (7 欄) ================= -->
     <div class="lg:col-span-7 space-y-4">
 
-      <!-- 繪圖區 -->
       <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
         <div class="flex justify-between items-center mb-1.5">
           <h3 class="font-bold text-xs text-slate-800">吸收光譜 (Experimental vs Fit Components)</h3>
@@ -148,7 +141,6 @@
         <div id="plotDiv" class="w-full h-[400px]"></div>
       </div>
 
-      <!-- 5. 擬合結果與統計表格 -->
       <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
         <h3 class="font-bold text-xs text-slate-800 border-b pb-1.5">5. 擬合結果</h3>
 
@@ -161,20 +153,16 @@
                 <th class="py-1 px-2 font-semibold">標準誤差</th>
               </tr>
             </thead>
-            <tbody id="resultTableBody" class="divide-y divide-slate-100 font-mono text-[11px]">
-              <!-- JS 動態生成 -->
-            </tbody>
+            <tbody id="resultTableBody" class="divide-y divide-slate-100 font-mono text-[11px]"></tbody>
           </table>
         </div>
 
-        <!-- 統計與衍生量文字區塊 (1:1 還原 text_stats) -->
         <div class="bg-slate-50 border border-slate-200 rounded p-2.5 font-mono text-[11px] text-slate-700 whitespace-pre-line leading-relaxed" id="statsTextBox">
 R^2 = -
 Reduced chi-square = -
 擬合狀態: 尚未執行
         </div>
 
-        <!-- 6. 匯出按鈕區塊 -->
         <div class="pt-2 border-t border-slate-100 grid grid-cols-2 gap-3">
           <button id="btnExportCurves" onclick="exportCurvesFile()" disabled class="bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white font-medium py-1.5 rounded text-xs transition">
             匯出數據 + 擬合曲線 (.txt)
@@ -194,7 +182,6 @@ Reduced chi-square = -
     let isSelectingSpan = false;
     let lastFitResults = null;
 
-    // 參數完整定義 (對應 PARAM_INFO)
     const PARAM_CONFIG = [
       { key: "alpha0", label: "α0 (整體振幅)", default: 1.0, min: 0.0, max: 1e6 },
       { key: "E0", label: "E0 (激子雷德堡能量, eV)", default: 0.03, min: 0.0001, max: 1.0 },
@@ -211,13 +198,11 @@ Reduced chi-square = -
       initPyodideCore();
     };
 
-    // 1. 在前端初始化 Pyodide 核心
     async function initPyodideCore() {
       try {
         pyodide = await loadPyodide();
         await pyodide.loadPackage(["numpy", "scipy"]);
 
-        // 注入包含數值防護的 Elliott 完整演算法
         await pyodide.runPythonAsync(`
 import numpy as np
 from scipy.signal import find_peaks, peak_widths
@@ -328,7 +313,6 @@ def run_fit_py(E_raw, A_raw, emin, emax, dim, n_max, x_upper, method, params_jso
     bounds_lb = [p_dict[k]["min"] for k in vary_keys]
     bounds_ub = [p_dict[k]["max"] for k in vary_keys]
 
-    # 確保初始值嚴格在邊界內
     for i in range(len(p0)):
         p0[i] = np.clip(p0[i], bounds_lb[i] + 1e-6, bounds_ub[i] - 1e-6)
 
@@ -355,30 +339,32 @@ def run_fit_py(E_raw, A_raw, emin, emax, dim, n_max, x_upper, method, params_jso
         success = res_opt.success
         msg = str(res_opt.message)
         stderr_map = {k: None for k in keys}
-    else: # leastsq
+    else:
         res_opt = least_squares(residual, p0, bounds=(bounds_lb, bounds_ub), method='trf', max_nfev=1500)
         p_opt_vary = res_opt.x
         success = res_opt.success
         msg = str(res_opt.message)
 
-        # 計算標準誤差
-        stderr_map = {}
+        # 安全計算標準誤差 (防止 SVD 崩潰)
+        stderr_map = {k: None for k in keys}
         try:
-            _, s, VT = np.linalg.svd(res_opt.jac, full_matrices=False)
-            threshold = np.finfo(float).eps * max(res_opt.jac.shape) * s[0]
-            s = s[s > threshold]
-            VT = VT[:len(s)]
-            pcov = np.dot(VT.T / (s**2), VT)
-            cost = 2 * res_opt.cost
-            s_sq = cost / (len(A_used) - len(p0))
-            pcov = pcov * s_sq
-            for idx, k in enumerate(vary_keys):
-                stderr_map[k] = float(np.sqrt(np.diag(pcov)[idx]))
+            if res_opt.jac is not None and res_opt.jac.size > 0:
+                _, s, VT = np.linalg.svd(res_opt.jac, full_matrices=False)
+                threshold = np.finfo(float).eps * max(res_opt.jac.shape) * s[0]
+                s_valid = s[s > threshold]
+                if len(s_valid) == len(s):
+                    VT_valid = VT[:len(s_valid)]
+                    pcov = np.dot(VT_valid.T / (s_valid**2), VT_valid)
+                    dof = len(A_used) - len(p0)
+                    if dof > 0:
+                        s_sq = (2.0 * res_opt.cost) / dof
+                        pcov = pcov * s_sq
+                        diag_cov = np.diag(pcov)
+                        for idx, k in enumerate(vary_keys):
+                            if diag_cov[idx] >= 0:
+                                stderr_map[k] = float(np.sqrt(diag_cov[idx]))
         except Exception:
-            for k in vary_keys:
-                stderr_map[k] = None
-        for k in fixed_keys:
-            stderr_map[k] = None
+            pass
 
     p_final = unpack_params(p_opt_vary)
 
@@ -576,7 +562,6 @@ def run_fit_py(E_raw, A_raw, emin, emax, dim, n_max, x_upper, method, params_jso
       setupPlotlyEvents();
     }
 
-    // 依選定範圍呼叫 Python 估算初猜值
     async function autoEstimateParameters() {
       if (!fullData) { alert("請先匯入實驗數據。"); return; }
       if (!pyodide) { alert("運算環境尚未載入完成。"); return; }
@@ -596,18 +581,12 @@ def run_fit_py(E_raw, A_raw, emin, emax, dim, n_max, x_upper, method, params_jso
       let est = await pyodide.runPythonAsync(`run_estimate_py(e_est, a_est, dim_est, user_e0_est, emin_est, emax_est)`);
       est = est.toJs();
 
-      // alpha0
       setParamRow("alpha0", est[0], Math.max(est[0] * 0.1, 1e-5), est[0] * 5);
-      // E0
       setParamRow("E0", est[1], 0.0001, 1.0);
-      // Eg
       let halfWindow = Math.max((emax - emin) * 0.5, 0.3);
       setParamRow("Eg", est[2], est[2] - halfWindow, est[2] + halfWindow);
-      // Gamma_ex
       setParamRow("Gamma_ex", est[3], Math.max(est[3] * 0.1, 1e-5), est[3] * 5);
-      // Gamma_c
       setParamRow("Gamma_c", est[4], Math.max(est[4] * 0.1, 1e-5), est[4] * 5);
-      // b
       setParamRow("b", est[5], -5.0, 5.0);
 
       alert(`已根據目前範圍 (${emin.toFixed(4)} ~ ${emax.toFixed(4)} eV) 與 ${dim} 模型自動估算初始值！\n能隙 Eg ≈ ${est[2].toFixed(4)} eV, E0 = ${est[1]} eV`);
@@ -619,7 +598,6 @@ def run_fit_py(E_raw, A_raw, emin, emax, dim, n_max, x_upper, method, params_jso
       document.getElementById(`max_${key}`).value = max.toFixed(4);
     }
 
-    // 純前端執行 Python 擬合演算法
     async function executeFitting() {
       if (!fullData) { alert("請先匯入實驗數據。"); return; }
       if (!pyodide) { alert("Python 運算核心尚未載入。"); return; }
@@ -658,7 +636,6 @@ run_fit_py(e_fit, a_fit, emin_fit, emax_fit, dim_fit, nmax_fit, xupper_fit, meth
           `);
           const res = JSON.parse(resJson);
 
-          // 填入結果表格
           PARAM_CONFIG.forEach(cfg => {
             const val = res.p_final[cfg.key];
             const err = res.stderr_map[cfg.key];
@@ -666,7 +643,6 @@ run_fit_py(e_fit, a_fit, emin_fit, emax_fit, dim_fit, nmax_fit, xupper_fit, meth
             document.getElementById(`res_err_${cfg.key}`).innerText = err !== null ? `${err.toFixed(4)}` : (pDict[cfg.key].vary ? "N/A" : "固定值");
           });
 
-          // 填入統計報告
           let statsReport = `模型維度: ${document.getElementById("dimSelect").value}\n` +
             `擬合是否成功: ${res.success ? '是' : '否'}\n` +
             `R^2 = ${res.r2.toFixed(6)}\n` +
@@ -678,7 +654,6 @@ run_fit_py(e_fit, a_fit, emin_fit, emax_fit, dim_fit, nmax_fit, xupper_fit, meth
             `優化器訊息: ${res.message}`;
           document.getElementById("statsTextBox").innerText = statsReport;
 
-          // 繪圖
           const tExp = { x: fullData.E, y: fullData.A, mode: "markers", name: "Experimental data", marker: { color: "#000", size: 3.5 } };
           const tExc = { x: res.E_used, y: res.exc, mode: "lines", name: "Excitonic absorption α_ext", line: { color: "#f97316", dash: "dash", width: 2 } };
           const tCont = { x: res.E_used, y: res.cont, mode: "lines", name: "Continuum absorption α_cont", line: { color: "#10b981", dash: "dashdot", width: 2 } };
