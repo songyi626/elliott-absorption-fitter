@@ -25,8 +25,8 @@
 
   <main class="max-w-7xl mx-auto p-6 grid lg:grid-cols-12 gap-6">
 
-    <!-- 左側面板：輸入與參數 (5 欄) -->
-    <div class="lg:col-span-5 space-y-6">
+    <!-- 左側面板 (5 欄) -->
+    <div class="lg:col-span-5 space-y-5">
 
       <!-- 1. 數據匯入 -->
       <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
@@ -43,7 +43,7 @@
         </div>
       </div>
 
-      <!-- 2. 模型設定與範圍 -->
+      <!-- 2. 擬合範圍與模型設定 -->
       <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
         <h2 class="font-bold text-sm text-slate-800 border-b pb-2">2. 模型維度與擬合範圍選擇</h2>
         
@@ -57,7 +57,7 @@
           </div>
           <div class="flex items-end">
             <button id="btnAutoEstimate" onclick="runAutoEstimate()" disabled class="w-full bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-700 font-semibold border border-emerald-300 py-1.5 rounded-lg text-xs transition">
-              ⚡ 自動估算初猜值
+              ⚡ 依選定範圍自動估算
             </button>
           </div>
         </div>
@@ -121,10 +121,9 @@
       </div>
     </div>
 
-    <!-- 右側面板：圖表與擬合結果 (7 欄) -->
-    <div class="lg:col-span-7 space-y-6">
+    <!-- 右側面板 (7 欄) -->
+    <div class="lg:col-span-7 space-y-5">
 
-      <!-- Plotly 互動式圖表 -->
       <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
         <div class="flex justify-between items-center mb-2">
           <h3 class="font-bold text-sm text-slate-800">光譜擬合分析圖</h3>
@@ -133,7 +132,6 @@
         <div id="plotDiv" class="w-full h-[410px]"></div>
       </div>
 
-      <!-- 擬合結果指標 -->
       <div id="resultsCard" class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
         <div class="flex justify-between items-center border-b pb-2">
           <h3 class="font-bold text-slate-800 text-sm">擬合數值與物理量結果</h3>
@@ -183,7 +181,7 @@
     let isSelectingSpan = false;
     let currentTraces = [];
 
-    // 1. 初始化 Pyodide
+    // 1. 初始化 Pyodide 並優化數值演算法
     async function initPyodideEnv() {
       try {
         pyodide = await loadPyodide();
@@ -204,7 +202,7 @@ def sech(x):
     out[~big] = 1.0 / np.cosh(x[~big])
     return out
 
-def exciton_term_raw(E, E0, Eg, Gamma_ex, n_max=8, dim="2D"):
+def exciton_term_raw(E, E0, Eg, Gamma_ex, n_max=6, dim="2D"):
     E = np.asarray(E, dtype=float)
     total = np.zeros_like(E)
     for n in range(1, int(n_max) + 1):
@@ -231,7 +229,8 @@ def _continuum_factor(x, Eg, E0, dim="2D"):
         num = 2.0 * np.pi * np.sqrt(np.maximum(E0, 0.0))
         return num / (1.0 - exp_term + EPS)
 
-def continuum_term_raw(E_array, Eg, E0, Gamma_c, b, n_max=8, x_upper=10.0, n_grid=250, dim="2D"):
+# 優化數值積分點數至 120 點，大幅降低瀏覽器負荷
+def continuum_term_raw(E_array, Eg, E0, Gamma_c, b, n_max=6, x_upper=6.0, n_grid=120, dim="2D"):
     E_array = np.asarray(E_array, dtype=float)
     x = np.linspace(Eg, Eg + x_upper, n_grid)
     denom = 1.0 - b * (x - Eg)
@@ -243,37 +242,46 @@ def continuum_term_raw(E_array, Eg, E0, Gamma_c, b, n_max=8, x_upper=10.0, n_gri
 
 def total_model(E, p, dim="2D"):
     alpha0, E0, Eg, Gamma_ex, Gamma_c, b = p
-    exc = alpha0 * exciton_term_raw(E, E0, Eg, Gamma_ex, 8, dim)
-    cont = alpha0 * continuum_term_raw(E, Eg, E0, Gamma_c, b, 8, 10.0, 250, dim)
+    exc = alpha0 * exciton_term_raw(E, E0, Eg, Gamma_ex, 6, dim)
+    cont = alpha0 * continuum_term_raw(E, Eg, E0, Gamma_c, b, 6, 6.0, 120, dim)
     return exc + cont
 
-def run_estimate_py(E, A, dim, user_E0):
+# 支援傳入 fit_emin 與 fit_emax 執行範圍截取
+def run_estimate_py(E, A, dim, user_E0, emin, emax):
     E = np.asarray(E, dtype=float)
     A = np.asarray(A, dtype=float)
     order = np.argsort(E)
     E, A = E[order], A[order]
-    A_max = float(np.max(A))
-    A_min = float(np.min(A))
+
+    # 範圍篩選
+    mask = (E >= emin) & (E <= emax)
+    E_sub = E[mask]
+    A_sub = A[mask]
+    if len(E_sub) < 5:
+        E_sub, A_sub = E, A
+
+    A_max = float(np.max(A_sub))
+    A_min = float(np.min(A_sub))
     alpha0 = max(A_max, 1e-6)
     E0_guess = user_E0 if (user_E0 is not None and user_E0 > 0) else (0.04 if dim == "2D" else 0.03)
 
     prominence = 0.05 * (A_max - A_min) if A_max > A_min else None
-    peaks, props = find_peaks(A, prominence=prominence)
+    peaks, props = find_peaks(A_sub, prominence=prominence)
     if len(peaks) > 0:
         best_idx = peaks[int(np.argmax(props["prominences"]))]
-        E_peak = E[best_idx]
-        widths_res = peak_widths(A, [best_idx], rel_height=0.5)
-        dE = float(np.mean(np.diff(E))) if len(E) > 1 else 1.0
+        E_peak = E_sub[best_idx]
+        widths_res = peak_widths(A_sub, [best_idx], rel_height=0.5)
+        dE = float(np.mean(np.diff(E_sub))) if len(E_sub) > 1 else 1.0
         fwhm = widths_res[0][0] * dE
         g_ex = max(fwhm / 2.634, 0.005)
         Eg = float(E_peak + 4.0 * E0_guess) if dim == "2D" else float(E_peak + E0_guess)
     else:
-        dA = np.gradient(A, E)
-        Eg = float(E[np.argmax(dA)])
+        dA = np.gradient(A_sub, E_sub)
+        Eg = float(E_sub[np.argmax(dA)])
         g_ex = 0.02
 
     g_c = max(g_ex * 1.5, 0.02)
-    return [float(alpha0), float(E0_guess), float(Eg), float(g_ex), float(g_c), 0.1]
+    return [float(alpha0), float(E0_guess), float(Eg), float(g_ex), float(g_c), 0.1, float(len(E_sub))]
 `);
 
         const statusEl = document.getElementById("pyodideStatus");
@@ -310,7 +318,7 @@ def run_estimate_py(E, A, dim, user_E0):
           y0: 0,
           y1: 1,
           fillcolor: '#3b82f6',
-          opacity: 0.12,
+          opacity: 0.15,
           line: { width: 0 }
         });
       }
@@ -340,20 +348,18 @@ def run_estimate_py(E, A, dim, user_E0):
         document.getElementById("emaxInput").value = xmax.toFixed(4);
         document.getElementById("rangeHint").innerText = `已選取範圍: ${xmin.toFixed(3)} ~ ${xmax.toFixed(3)} eV`;
 
-        // 更新藍色半透明選取遮罩
         Plotly.relayout("plotDiv", getPlotLayout());
       });
     }
 
-    // 4. 切換拖曳選取模式 (Span Selection)
     function toggleSpanSelect() {
       isSelectingSpan = !isSelectingSpan;
       const btn = document.getElementById("btnToggleSpan");
       const txt = document.getElementById("spanText");
       if (isSelectingSpan) {
         btn.className = "flex-1 bg-blue-600 text-white border border-blue-600 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition flex items-center justify-center space-x-1";
-        txt.innerText = "選取模式中：請在圖上拖曳滑鼠";
-        document.getElementById("rangeHint").innerText = "👉 請在光譜圖上左右拖曳以框定範圍";
+        txt.innerText = "選取中：請在圖上左右框選";
+        document.getElementById("rangeHint").innerText = "👉 請在圖上左右拉動滑鼠以框選區間";
       } else {
         btn.className = "flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 py-1.5 rounded-lg text-xs font-medium transition flex items-center justify-center space-x-1";
         txt.innerText = "啟動圖上「拖曳選擇範圍」";
@@ -373,11 +379,11 @@ def run_estimate_py(E, A, dim, user_E0):
       const maxE = Math.max(...data.E);
       document.getElementById("eminInput").value = minE.toFixed(4);
       document.getElementById("emaxInput").value = maxE.toFixed(4);
-      document.getElementById("rangeHint").innerText = `已重設為全數據範圍 (${minE.toFixed(3)} ~ ${maxE.toFixed(3)} eV)`;
+      document.getElementById("rangeHint").innerText = `已重設為全範圍 (${minE.toFixed(3)} ~ ${maxE.toFixed(3)} eV)`;
       Plotly.relayout("plotDiv", getPlotLayout());
     }
 
-    // 5. 數據讀取與解析
+    // 4. 數據讀取
     document.getElementById("fileInput").addEventListener("change", function(e) {
       const file = e.target.files[0];
       if (!file) return;
@@ -429,19 +435,30 @@ def run_estimate_py(E, A, dim, user_E0):
       setupPlotlyEvents();
     }
 
-    // 6. 自動估算初猜值
+    // 5. 自動估算初猜值（已加入範圍篩選）
     async function runAutoEstimate() {
       const data = parseData();
       if (!data) { alert("請先載入或貼上實驗數據！"); return; }
       const dim = document.getElementById("dimSelect").value;
       const userE0 = parseFloat(document.getElementById("p_E0").value) || 0.04;
 
+      let emin = parseFloat(document.getElementById("eminInput").value);
+      let emax = parseFloat(document.getElementById("emaxInput").value);
+      if (isNaN(emin)) emin = Math.min(...data.E);
+      if (isNaN(emax)) emax = Math.max(...data.E);
+      if (emin >= emax) {
+        alert("Emin 必須小於 Emax！");
+        return;
+      }
+
       pyodide.globals.set("temp_E", data.E);
       pyodide.globals.set("temp_A", data.A);
       pyodide.globals.set("temp_dim", dim);
       pyodide.globals.set("temp_userE0", userE0);
+      pyodide.globals.set("temp_emin", emin);
+      pyodide.globals.set("temp_emax", emax);
 
-      let est = await pyodide.runPythonAsync(`run_estimate_py(temp_E, temp_A, temp_dim, temp_userE0)`);
+      let est = await pyodide.runPythonAsync(`run_estimate_py(temp_E, temp_A, temp_dim, temp_userE0, temp_emin, temp_emax)`);
       est = est.toJs();
 
       document.getElementById("p_alpha0").value = est[0].toFixed(3);
@@ -451,10 +468,10 @@ def run_estimate_py(E, A, dim, user_E0):
       document.getElementById("p_Gamma_c").value = est[4].toFixed(4);
       document.getElementById("p_b").value = est[5].toFixed(2);
 
-      alert(`已依據 ${dim} 模型自動估算初始值！\n能隙 Eg ≈ ${est[2].toFixed(4)} eV`);
+      alert(`已成功鎖定選取範圍 (${emin.toFixed(3)} ~ ${emax.toFixed(3)} eV，共 ${est[6]} 個點)！\n估算能隙 Eg ≈ ${est[2].toFixed(4)} eV`);
     }
 
-    // 7. 擬合運算
+    // 6. 擬合運算（使用非同步延遲防止瀏覽器凍結）
     async function startFitting() {
       const data = parseData();
       if (!data) { alert("請先載入數據！"); return; }
@@ -463,28 +480,30 @@ def run_estimate_py(E, A, dim, user_E0):
       btn.disabled = true;
       btn.innerText = "擬合中，請稍候...";
 
-      const dim = document.getElementById("dimSelect").value;
-      const emin = parseFloat(document.getElementById("eminInput").value) || Math.min(...data.E);
-      const emax = parseFloat(document.getElementById("emaxInput").value) || Math.max(...data.E);
+      // 給瀏覽器 50ms 重新繪製 UI 狀態，避免看起來假死
+      setTimeout(async () => {
+        const dim = document.getElementById("dimSelect").value;
+        const emin = parseFloat(document.getElementById("eminInput").value) || Math.min(...data.E);
+        const emax = parseFloat(document.getElementById("emaxInput").value) || Math.max(...data.E);
 
-      const p_init = [
-        parseFloat(document.getElementById("p_alpha0").value),
-        parseFloat(document.getElementById("p_E0").value),
-        parseFloat(document.getElementById("p_Eg").value),
-        parseFloat(document.getElementById("p_Gamma_ex").value),
-        parseFloat(document.getElementById("p_Gamma_c").value),
-        parseFloat(document.getElementById("p_b").value)
-      ];
+        const p_init = [
+          parseFloat(document.getElementById("p_alpha0").value),
+          parseFloat(document.getElementById("p_E0").value),
+          parseFloat(document.getElementById("p_Eg").value),
+          parseFloat(document.getElementById("p_Gamma_ex").value),
+          parseFloat(document.getElementById("p_Gamma_c").value),
+          parseFloat(document.getElementById("p_b").value)
+        ];
 
-      pyodide.globals.set("fit_E", data.E);
-      pyodide.globals.set("fit_A", data.A);
-      pyodide.globals.set("fit_p_init", p_init);
-      pyodide.globals.set("fit_emin", emin);
-      pyodide.globals.set("fit_emax", emax);
-      pyodide.globals.set("fit_dim", dim);
+        pyodide.globals.set("fit_E", data.E);
+        pyodide.globals.set("fit_A", data.A);
+        pyodide.globals.set("fit_p_init", p_init);
+        pyodide.globals.set("fit_emin", emin);
+        pyodide.globals.set("fit_emax", emax);
+        pyodide.globals.set("fit_dim", dim);
 
-      try {
-        let resJson = await pyodide.runPythonAsync(`
+        try {
+          let resJson = await pyodide.runPythonAsync(`
 import json
 
 E_arr = np.asarray(fit_E, dtype=float)
@@ -497,17 +516,19 @@ E_used = E_arr[mask]
 A_used = A_arr[mask]
 
 p0 = list(fit_p_init)
-lb = [1e-5, 0.0001, max(p0[2]-0.5, 0.1), 0.0001, 0.0001, -5.0]
-ub = [1e6, 1.0, p0[2]+0.5, 1.0, 1.0, 5.0]
+# 動態限制邊界
+lb = [1e-5, 0.0001, max(p0[2]-0.4, 0.1), 0.0001, 0.0001, -3.0]
+ub = [1e6, 1.0, p0[2]+0.4, 1.0, 1.0, 3.0]
 
 def residuals(p):
     return total_model(E_used, p, fit_dim) - A_used
 
-opt_res = least_squares(residuals, p0, bounds=(lb, ub), method='trf', max_nfev=2500)
+# 限制最大評估次數為 600 次，在 WebAssembly 環境下大幅加速
+opt_res = least_squares(residuals, p0, bounds=(lb, ub), method='trf', max_nfev=600, xtol=1e-5, ftol=1e-5)
 p_opt = opt_res.x
 
-exc = p_opt[0] * exciton_term_raw(E_used, p_opt[1], p_opt[2], p_opt[3], 8, fit_dim)
-cont = p_opt[0] * continuum_term_raw(E_used, p_opt[2], p_opt[1], p_opt[4], p_opt[5], 8, 10.0, 250, fit_dim)
+exc = p_opt[0] * exciton_term_raw(E_used, p_opt[1], p_opt[2], p_opt[3], 6, fit_dim)
+cont = p_opt[0] * continuum_term_raw(E_used, p_opt[2], p_opt[1], p_opt[4], p_opt[5], 6, 6.0, 120, fit_dim)
 tot = exc + cont
 
 ss_res = float(np.sum((A_used - tot) ** 2))
@@ -537,53 +558,54 @@ out_dict = {
 }
 json.dumps(out_dict)
 `);
-        const res = JSON.parse(resJson);
+          const res = JSON.parse(resJson);
 
-        document.getElementById("badgeR2").innerText = `R² = ${res.r2.toFixed(5)}`;
-        document.getElementById("badgeR2").className = "bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-1 rounded";
+          document.getElementById("badgeR2").innerText = `R² = ${res.r2.toFixed(5)}`;
+          document.getElementById("badgeR2").className = "bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-1 rounded";
 
-        document.getElementById("res_Eg").innerText = `${res.p_opt[2].toFixed(5)} eV`;
-        document.getElementById("res_Eb_label").innerText = `基態束縛能 (${res.eb_label})`;
-        document.getElementById("res_Eb").innerText = `${res.Eb_n1.toFixed(5)} eV`;
-        document.getElementById("res_Eex").innerText = `${res.Eex_n1.toFixed(5)} eV`;
-        document.getElementById("res_Gex").innerText = `${res.p_opt[3].toFixed(5)} eV`;
-        document.getElementById("res_Gc").innerText = `${res.p_opt[4].toFixed(5)} eV`;
-        document.getElementById("res_alpha0").innerText = `${res.p_opt[0].toFixed(3)}`;
+          document.getElementById("res_Eg").innerText = `${res.p_opt[2].toFixed(5)} eV`;
+          document.getElementById("res_Eb_label").innerText = `基態束縛能 (${res.eb_label})`;
+          document.getElementById("res_Eb").innerText = `${res.Eb_n1.toFixed(5)} eV`;
+          document.getElementById("res_Eex").innerText = `${res.Eex_n1.toFixed(5)} eV`;
+          document.getElementById("res_Gex").innerText = `${res.p_opt[3].toFixed(5)} eV`;
+          document.getElementById("res_Gc").innerText = `${res.p_opt[4].toFixed(5)} eV`;
+          document.getElementById("res_alpha0").innerText = `${res.p_opt[0].toFixed(3)}`;
 
-        const tExp = {
-          x: data.E, y: data.A, mode: "markers", name: "實驗數據",
-          marker: { color: "#64748b", size: 3.5, opacity: 0.5 }
-        };
-        const tExc = {
-          x: res.E_used, y: res.exc, mode: "lines", name: "激子吸收 α_ex",
-          line: { color: "#f97316", dash: "dash", width: 2 }
-        };
-        const tCont = {
-          x: res.E_used, y: res.cont, mode: "lines", name: "連續態 α_cont",
-          line: { color: "#10b981", dash: "dot", width: 2 }
-        };
-        const tTot = {
-          x: res.E_used, y: res.tot, mode: "lines", name: "總擬合曲線 (Total)",
-          line: { color: "#ef4444", width: 2.5 }
-        };
+          const tExp = {
+            x: data.E, y: data.A, mode: "markers", name: "實驗數據",
+            marker: { color: "#64748b", size: 3.5, opacity: 0.5 }
+          };
+          const tExc = {
+            x: res.E_used, y: res.exc, mode: "lines", name: "激子吸收 α_ex",
+            line: { color: "#f97316", dash: "dash", width: 2 }
+          };
+          const tCont = {
+            x: res.E_used, y: res.cont, mode: "lines", name: "連續態 α_cont",
+            line: { color: "#10b981", dash: "dot", width: 2 }
+          };
+          const tTot = {
+            x: res.E_used, y: res.tot, mode: "lines", name: "總擬合曲線 (Total)",
+            line: { color: "#ef4444", width: 2.5 }
+          };
 
-        currentTraces = [tExp, tExc, tCont, tTot];
-        Plotly.react("plotDiv", currentTraces, getPlotLayout());
-        setupPlotlyEvents();
+          currentTraces = [tExp, tExc, tCont, tTot];
+          Plotly.react("plotDiv", currentTraces, getPlotLayout());
+          setupPlotlyEvents();
 
-        let lines = ["Energy(eV)\tAbs_Exp\tFit_Total\tExciton\tContinuum"];
-        for (let i = 0; i < res.E_used.length; i++) {
-          lines.push(`${res.E_used[i].toFixed(6)}\t${res.A_used[i].toFixed(6)}\t${res.tot[i].toFixed(6)}\t${res.exc[i].toFixed(6)}\t${res.cont[i].toFixed(6)}`);
+          let lines = ["Energy(eV)\tAbs_Exp\tFit_Total\tExciton\tContinuum"];
+          for (let i = 0; i < res.E_used.length; i++) {
+            lines.push(`${res.E_used[i].toFixed(6)}\t${res.A_used[i].toFixed(6)}\t${res.tot[i].toFixed(6)}\t${res.exc[i].toFixed(6)}\t${res.cont[i].toFixed(6)}`);
+          }
+          exportTextData = lines.join("\n");
+          document.getElementById("btnExportOrigin").disabled = false;
+
+        } catch (err) {
+          alert("擬合發生錯誤: " + err);
+        } finally {
+          btn.disabled = false;
+          btn.innerText = "開始執行擬合 (Run Fit)";
         }
-        exportTextData = lines.join("\n");
-        document.getElementById("btnExportOrigin").disabled = false;
-
-      } catch (err) {
-        alert("擬合發生錯誤: " + err);
-      } finally {
-        btn.disabled = false;
-        btn.innerText = "開始執行擬合 (Run Fit)";
-      }
+      }, 50);
     }
 
     function exportOriginFile() {
