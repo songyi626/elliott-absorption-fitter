@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Elliott 吸收光譜分析工具 (2D / 3D)</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Plotly.js 互動繪圖庫 -->
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <!-- Pyodide 瀏覽器端 Python 核心 -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+
+  <!-- 頂部標題列 -->
+  <header class="bg-white border-b border-slate-200 px-6 py-4 shadow-sm">
+    <div class="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
+      <div>
+        <h1 class="text-xl font-bold text-slate-900">🔬 Elliott Formula 吸收光譜擬合分析</h1>
+        <p class="text-xs text-slate-500 mt-0.5">純前端 WebAssembly 運算・免後端伺服器・支援 2D / 3D 鈣鈦礦與半導體材料</p>
+      </div>
+      <div id="pyodideStatus" class="flex items-center space-x-2 text-xs bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full border border-amber-200 font-medium">
+        <span class="inline-block w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
+        <span>正在載入科學運算環境 (NumPy / SciPy)...</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto p-6 grid lg:grid-cols-12 gap-6">
+
+    <!-- 左側面板：輸入與參數 (5 欄) -->
+    <div class="lg:col-span-5 space-y-6">
+
+      <!-- 1. 數據匯入 -->
+      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+        <h2 class="font-bold text-sm text-slate-800 flex items-center justify-between border-b pb-2">
+          <span>1. 匯入實驗數據</span>
+          <button onclick="loadSampleData()" class="text-xs text-blue-600 hover:underline font-normal">載入範例數據</button>
+        </h2>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">上傳檔案 (.txt / .csv / .dat，兩欄: 能量 eV, 吸光度)</label>
+          <input type="file" id="fileInput" accept=".txt,.csv,.dat" class="w-full text-xs text-slate-500 file:mr-2 file:py-1 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
+        </div>
+        <div>
+          <textarea id="rawTextArea" rows="4" placeholder="1.400   0.0064&#10;1.403  -0.0024&#10;..." class="w-full border border-slate-200 rounded-lg p-2 text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
+        </div>
+      </div>
+
+      <!-- 2. 模型設定與範圍 -->
+      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+        <h2 class="font-bold text-sm text-slate-800 border-b pb-2">2. 模型維度與範圍</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">材料維度</label>
+            <select id="dimSelect" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white focus:ring-2 focus:ring-blue-500 outline-none font-medium">
+              <option value="2D">2D / Quasi-2D (準二維)</option>
+              <option value="3D">3D Bulk (塊材)</option>
+            </select>
+          </div>
+          <div class="flex items-end">
+            <button id="btnAutoEstimate" onclick="runAutoEstimate()" disabled class="w-full bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-700 font-semibold border border-emerald-300 py-1.5 rounded-lg text-xs transition">
+              ⚡ 自動估算初猜值
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Emin (eV)</label>
+            <input type="number" step="0.001" id="eminInput" placeholder="全範圍" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Emax (eV)</label>
+            <input type="number" step="0.001" id="emaxInput" placeholder="全範圍" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. 初猜參數設定 -->
+      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+        <h2 class="font-bold text-sm text-slate-800 border-b pb-2">3. 初始擬合參數</h2>
+        <div class="grid grid-cols-3 gap-2 text-xs">
+          <div>
+            <label class="block text-slate-600 mb-1">Eg (能隙, eV)</label>
+            <input type="number" step="0.001" id="p_Eg" value="1.68" class="w-full border rounded p-1.5">
+          </div>
+          <div>
+            <label class="block text-slate-600 mb-1">E0 (雷德堡, eV)</label>
+            <input type="number" step="0.001" id="p_E0" value="0.04" class="w-full border rounded p-1.5">
+          </div>
+          <div>
+            <label class="block text-slate-600 mb-1">α0 (整體振幅)</label>
+            <input type="number" step="0.01" id="p_alpha0" value="1.0" class="w-full border rounded p-1.5">
+          </div>
+          <div>
+            <label class="block text-slate-600 mb-1">Γex (激子展寬)</label>
+            <input type="number" step="0.001" id="p_Gamma_ex" value="0.02" class="w-full border rounded p-1.5">
+          </div>
+          <div>
+            <label class="block text-slate-600 mb-1">Γc (連續態展寬)</label>
+            <input type="number" step="0.001" id="p_Gamma_c" value="0.05" class="w-full border rounded p-1.5">
+          </div>
+          <div>
+            <label class="block text-slate-600 mb-1">b (非拋物參數)</label>
+            <input type="number" step="0.01" id="p_b" value="0.1" class="w-full border rounded p-1.5">
+          </div>
+        </div>
+
+        <button id="btnRunFit" onclick="startFitting()" disabled class="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-2.5 rounded-lg text-sm shadow transition duration-150">
+          開始執行擬合 (Run Fit)
+        </button>
+      </div>
+    </div>
+
+    <!-- 右側面板：圖表與擬合結果 (7 欄) -->
+    <div class="lg:col-span-7 space-y-6">
+
+      <!-- Plotly 互動式圖表 -->
+      <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+        <div class="flex justify-between items-center mb-2">
+          <h3 class="font-bold text-sm text-slate-800">光譜擬合分析圖</h3>
+          <span class="text-[11px] text-slate-400">可使用滑鼠框選放大、按兩下還原</span>
+        </div>
+        <div id="plotDiv" class="w-full h-[400px]"></div>
+      </div>
+
+      <!-- 擬合結果指標 -->
+      <div id="resultsCard" class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <div class="flex justify-between items-center border-b pb-2">
+          <h3 class="font-bold text-slate-800 text-sm">擬合數值與物理量結果</h3>
+          <span id="badgeR2" class="bg-slate-100 text-slate-600 text-xs font-bold px-2.5 py-1 rounded">R² = -</span>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-center">
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+            <span class="text-[11px] text-slate-500 block">帶隙 (Eg)</span>
+            <span id="res_Eg" class="text-base font-bold text-slate-900 font-mono">-</span>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+            <span id="res_Eb_label" class="text-[11px] text-slate-500 block">基態束縛能 (Eb)</span>
+            <span id="res_Eb" class="text-base font-bold text-rose-600 font-mono">-</span>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+            <span class="text-[11px] text-slate-500 block">激子峰理論位址 (Eex)</span>
+            <span id="res_Eex" class="text-base font-bold text-indigo-600 font-mono">-</span>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+            <span class="text-[11px] text-slate-500 block">激子展寬 (Γex)</span>
+            <span id="res_Gex" class="text-xs font-semibold text-slate-700 font-mono">-</span>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+            <span class="text-[11px] text-slate-500 block">連續態展寬 (Γc)</span>
+            <span id="res_Gc" class="text-xs font-semibold text-slate-700 font-mono">-</span>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+            <span class="text-[11px] text-slate-500 block">整體振幅 (α0)</span>
+            <span id="res_alpha0" class="text-xs font-semibold text-slate-700 font-mono">-</span>
+          </div>
+        </div>
+
+        <!-- 匯出按鈕 -->
+        <div class="pt-1">
+          <button id="btnExportOrigin" onclick="exportOriginFile()" disabled class="w-full bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white font-medium py-2 rounded-lg text-xs flex items-center justify-center space-x-2 transition">
+            <span>📥 匯出 Origin 作圖數據檔 (.txt, 包含實驗/激子/連續態/總擬合)</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script>
+    let pyodide = null;
+    let exportTextData = "";
+
+    // 1. 初始化 Pyodide 與 Python 科學環境
+    async function initPyodideEnv() {
+      try {
+        pyodide = await loadPyodide();
+        await pyodide.loadPackage(["numpy", "scipy"]);
+
+        // 注入核心運算腳本 (對應 elliott_model.py 與 estimator.py)
+        await pyodide.runPythonAsync(`
+import numpy as np
+from scipy.signal import find_peaks, peak_widths
+from scipy.optimize import least_squares
+
+EPS = 1e-8
+
+def sech(x):
+    x = np.asarray(x, dtype=float)
+    out = np.empty_like(x)
+    big = np.abs(x) > 30
+    out[big] = 0.0
+    out[~big] = 1.0 / np.cosh(x[~big])
+    return out
+
+def exciton_term_raw(E, E0, Eg, Gamma_ex, n_max=8, dim="2D"):
+    E = np.asarray(E, dtype=float)
+    total = np.zeros_like(E)
+    for n in range(1, int(n_max) + 1):
+        if dim == "2D":
+            m = n - 0.5
+            Eb_n = E0 / (m ** 2)
+            coeff = (4.0 * E0) / (m ** 3)
+        else:
+            m = float(n)
+            Eb_n = E0 / (m ** 2)
+            coeff = (2.0 * E0) / (m ** 3)
+        total += coeff * sech((E - Eg + Eb_n) / Gamma_ex)
+    return total
+
+def _continuum_factor(x, Eg, E0, dim="2D"):
+    x = np.asarray(x, dtype=float)
+    denom = x - Eg
+    safe_denom = np.where(denom < EPS, EPS, denom)
+    sqrt_term = np.sqrt(np.maximum(E0, 0.0) / safe_denom)
+    if dim == "2D":
+        return 2.0 / (1.0 + np.exp(-2.0 * np.pi * sqrt_term))
+    else:
+        exp_term = np.exp(-2.0 * np.pi * sqrt_term)
+        num = 2.0 * np.pi * np.sqrt(np.maximum(E0, 0.0))
+        return num / (1.0 - exp_term + EPS)
+
+def continuum_term_raw(E_array, Eg, E0, Gamma_c, b, n_max=8, x_upper=10.0, n_grid=250, dim="2D"):
+    E_array = np.asarray(E_array, dtype=float)
+    x = np.linspace(Eg, Eg + x_upper, n_grid)
+    denom = 1.0 - b * (x - Eg)
+    denom = np.where(np.abs(denom) < EPS, np.where(denom >= 0, EPS, -EPS), denom)
+    F_effective = _continuum_factor(x, Eg, E0, dim=dim)
+    diff = E_array[:, None] - x[None, :]
+    integrand_core = (sech(diff / Gamma_c) * F_effective[None, :]) / denom[None, :]
+    return np.trapezoid(integrand_core, x, axis=1)
+
+def total_model(E, p, dim="2D"):
+    # p: [alpha0, E0, Eg, Gamma_ex, Gamma_c, b]
+    alpha0, E0, Eg, Gamma_ex, Gamma_c, b = p
+    exc = alpha0 * exciton_term_raw(E, E0, Eg, Gamma_ex, 8, dim)
+    cont = alpha0 * continuum_term_raw(E, Eg, E0, Gamma_c, b, 8, 10.0, 250, dim)
+    return exc + cont
+
+def run_estimate_py(E, A, dim, user_E0):
+    E = np.asarray(E, dtype=float)
+    A = np.asarray(A, dtype=float)
+    order = np.argsort(E)
+    E, A = E[order], A[order]
+    A_max = float(np.max(A))
+    A_min = float(np.min(A))
+    alpha0 = max(A_max, 1e-6)
+    E0_guess = user_E0 if (user_E0 is not None and user_E0 > 0) else (0.04 if dim == "2D" else 0.03)
+
+    prominence = 0.05 * (A_max - A_min) if A_max > A_min else None
+    peaks, props = find_peaks(A, prominence=prominence)
+    if len(peaks) > 0:
+        best_idx = peaks[int(np.argmax(props["prominences"]))]
+        E_peak = E[best_idx]
+        widths_res = peak_widths(A, [best_idx], rel_height=0.5)
+        dE = float(np.mean(np.diff(E))) if len(E) > 1 else 1.0
+        fwhm = widths_res[0][0] * dE
+        g_ex = max(fwhm / 2.634, 0.005)
+        Eg = float(E_peak + 4.0 * E0_guess) if dim == "2D" else float(E_peak + E0_guess)
+    else:
+        dA = np.gradient(A, E)
+        Eg = float(E[np.argmax(dA)])
+        g_ex = 0.02
+
+    g_c = max(g_ex * 1.5, 0.02)
+    return [float(alpha0), float(E0_guess), float(Eg), float(g_ex), float(g_c), 0.1]
+`);
+
+        const statusEl = document.getElementById("pyodideStatus");
+        statusEl.className = "flex items-center space-x-2 text-xs bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full border border-emerald-200 font-medium";
+        statusEl.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span><span>科學運算核心已準備完成</span>`;
+
+        document.getElementById("btnAutoEstimate").disabled = false;
+        document.getElementById("btnRunFit").disabled = false;
+
+        initEmptyPlot();
+      } catch (err) {
+        document.getElementById("pyodideStatus").innerText = "載入失敗: " + err;
+      }
+    }
+    window.addEventListener("DOMContentLoaded", initPyodideEnv);
+
+    // 2. 初始化空圖表
+    function initEmptyPlot() {
+      Plotly.newPlot("plotDiv", [], {
+        title: { text: "吸收光譜圖", font: { size: 14 } },
+        xaxis: { title: "Photon Energy (eV)", zeroline: false },
+        yaxis: { title: "Absorbance (a.u.)", zeroline: false },
+        margin: { l: 55, r: 25, t: 35, b: 45 },
+        legend: { orientation: "h", y: 1.12 }
+      }, { responsive: true });
+    }
+
+    // 3. 檔案載入與解析
+    document.getElementById("fileInput").addEventListener("change", function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const r = new FileReader();
+      r.onload = function(evt) {
+        document.getElementById("rawTextArea").value = evt.target.result;
+        updatePlotWithData();
+      };
+      r.readAsText(file);
+    });
+
+    document.getElementById("rawTextArea").addEventListener("change", updatePlotWithData);
+
+    function parseData() {
+      const text = document.getElementById("rawTextArea").value.trim();
+      if (!text) return null;
+      let lines = text.split("\n");
+      let E = [], A = [];
+      for (let l of lines) {
+        let parts = l.trim().split(/[\s,;\t]+/);
+        if (parts.length >= 2) {
+          let x = parseFloat(parts[0]), y = parseFloat(parts[1]);
+          if (!isNaN(x) && !isNaN(y)) {
+            E.push(x);
+            A.push(y);
+          }
+        }
+      }
+      return E.length > 0 ? { E, A } : null;
+    }
+
+    function updatePlotWithData() {
+      const data = parseData();
+      if (!data) return;
+      const trace = {
+        x: data.E,
+        y: data.A,
+        mode: "markers",
+        name: "實驗數據",
+        marker: { color: "#1e293b", size: 4, opacity: 0.7 }
+      };
+      Plotly.react("plotDiv", [trace], {
+        title: { text: "吸收光譜圖", font: { size: 14 } },
+        xaxis: { title: "Photon Energy (eV)" },
+        yaxis: { title: "Absorbance (a.u.)" },
+        margin: { l: 55, r: 25, t: 35, b: 45 },
+        legend: { orientation: "h", y: 1.12 }
+      });
+    }
+
+    // 4. 自動估算初猜值
+    async function runAutoEstimate() {
+      const data = parseData();
+      if (!data) { alert("請先載入或貼上實驗數據！"); return; }
+      const dim = document.getElementById("dimSelect").value;
+      const userE0 = parseFloat(document.getElementById("p_E0").value) || 0.04;
+
+      pyodide.globals.set("temp_E", data.E);
+      pyodide.globals.set("temp_A", data.A);
+      pyodide.globals.set("temp_dim", dim);
+      pyodide.globals.set("temp_userE0", userE0);
+
+      let est = await pyodide.runPythonAsync(`run_estimate_py(temp_E, temp_A, temp_dim, temp_userE0)`);
+      est = est.toJs();
+
+      document.getElementById("p_alpha0").value = est[0].toFixed(3);
+      document.getElementById("p_E0").value = est[1].toFixed(4);
+      document.getElementById("p_Eg").value = est[2].toFixed(4);
+      document.getElementById("p_Gamma_ex").value = est[3].toFixed(4);
+      document.getElementById("p_Gamma_c").value = est[4].toFixed(4);
+      document.getElementById("p_b").value = est[5].toFixed(2);
+
+      let minE = Math.min(...data.E), maxE = Math.max(...data.E);
+      document.getElementById("eminInput").value = minE.toFixed(3);
+      document.getElementById("emaxInput").value = maxE.toFixed(3);
+
+      alert(`已依據 ${dim} 模型估算初始值！\n能隙 Eg ≈ ${est[2].toFixed(4)} eV`);
+    }
+
+    // 5. 執行擬合演算法
+    async function startFitting() {
+      const data = parseData();
+      if (!data) { alert("請先載入數據！"); return; }
+
+      const btn = document.getElementById("btnRunFit");
+      btn.disabled = true;
+      btn.innerText = "擬合中，請稍候...";
+
+      const dim = document.getElementById("dimSelect").value;
+      const emin = parseFloat(document.getElementById("eminInput").value) || Math.min(...data.E);
+      const emax = parseFloat(document.getElementById("emaxInput").value) || Math.max(...data.E);
+
+      const p_init = [
+        parseFloat(document.getElementById("p_alpha0").value),
+        parseFloat(document.getElementById("p_E0").value),
+        parseFloat(document.getElementById("p_Eg").value),
+        parseFloat(document.getElementById("p_Gamma_ex").value),
+        parseFloat(document.getElementById("p_Gamma_c").value),
+        parseFloat(document.getElementById("p_b").value)
+      ];
+
+      pyodide.globals.set("fit_E", data.E);
+      pyodide.globals.set("fit_A", data.A);
+      pyodide.globals.set("fit_p_init", p_init);
+      pyodide.globals.set("fit_emin", emin);
+      pyodide.globals.set("fit_emax", emax);
+      pyodide.globals.set("fit_dim", dim);
+
+      try {
+        let resJson = await pyodide.runPythonAsync(`
+import json
+
+E_arr = np.asarray(fit_E, dtype=float)
+A_arr = np.asarray(fit_A, dtype=float)
+order = np.argsort(E_arr)
+E_arr, A_arr = E_arr[order], A_arr[order]
+
+mask = (E_arr >= fit_emin) & (E_arr <= fit_emax)
+E_used = E_arr[mask]
+A_used = A_arr[mask]
+
+p0 = list(fit_p_init)
+# bounds: lower, upper
+# [alpha0, E0, Eg, Gamma_ex, Gamma_c, b]
+lb = [1e-5, 0.0001, max(p0[2]-0.5, 0.1), 0.0001, 0.0001, -5.0]
+ub = [1e6, 1.0, p0[2]+0.5, 1.0, 1.0, 5.0]
+
+def residuals(p):
+    return total_model(E_used, p, fit_dim) - A_used
+
+opt_res = least_squares(residuals, p0, bounds=(lb, ub), method='trf', max_nfev=2500)
+p_opt = opt_res.x
+
+# 計算曲線拆解項
+exc = p_opt[0] * exciton_term_raw(E_used, p_opt[1], p_opt[2], p_opt[3], 8, fit_dim)
+cont = p_opt[0] * continuum_term_raw(E_used, p_opt[2], p_opt[1], p_opt[4], p_opt[5], 8, 10.0, 250, fit_dim)
+tot = exc + cont
+
+ss_res = float(np.sum((A_used - tot) ** 2))
+ss_tot = float(np.sum((A_used - np.mean(A_used)) ** 2))
+r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else 0.0
+
+if fit_dim == "2D":
+    Eb_n1 = float(4.0 * p_opt[1])
+    eb_label = "4×E0"
+else:
+    Eb_n1 = float(p_opt[1])
+    eb_label = "E0"
+Eex_n1 = float(p_opt[2] - Eb_n1)
+
+out_dict = {
+    "success": bool(opt_res.success),
+    "p_opt": [float(x) for x in p_opt],
+    "r2": r2,
+    "Eb_n1": Eb_n1,
+    "eb_label": eb_label,
+    "Eex_n1": Eex_n1,
+    "E_used": E_used.tolist(),
+    "A_used": A_used.tolist(),
+    "exc": exc.tolist(),
+    "cont": cont.tolist(),
+    "tot": tot.tolist()
+}
+json.dumps(out_dict)
+`);
+        const res = JSON.parse(resJson);
+
+        // 渲染指標
+        document.getElementById("badgeR2").innerText = `R² = ${res.r2.toFixed(5)}`;
+        document.getElementById("badgeR2").className = "bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-1 rounded";
+
+        document.getElementById("res_Eg").innerText = `${res.p_opt[2].toFixed(5)} eV`;
+        document.getElementById("res_Eb_label").innerText = `基態束縛能 (${res.eb_label})`;
+        document.getElementById("res_Eb").innerText = `${res.Eb_n1.toFixed(5)} eV`;
+        document.getElementById("res_Eex").innerText = `${res.Eex_n1.toFixed(5)} eV`;
+        document.getElementById("res_Gex").innerText = `${res.p_opt[3].toFixed(5)} eV`;
+        document.getElementById("res_Gc").innerText = `${res.p_opt[4].toFixed(5)} eV`;
+        document.getElementById("res_alpha0").innerText = `${res.p_opt[0].toFixed(3)}`;
+
+        // 更新圖表
+        const tExp = {
+          x: data.E, y: data.A, mode: "markers", name: "實驗數據",
+          marker: { color: "#64748b", size: 3.5, opacity: 0.5 }
+        };
+        const tExc = {
+          x: res.E_used, y: res.exc, mode: "lines", name: "激子吸收 α_ex",
+          line: { color: "#f97316", dash: "dash", width: 2 }
+        };
+        const tCont = {
+          x: res.E_used, y: res.cont, mode: "lines", name: "連續態 α_cont",
+          line: { color: "#10b981", dash: "dot", width: 2 }
+        };
+        const tTot = {
+          x: res.E_used, y: res.tot, mode: "lines", name: "總擬合曲線 (Total)",
+          line: { color: "#ef4444", width: 2.5 }
+        };
+
+        Plotly.react("plotDiv", [tExp, tExc, tCont, tTot], {
+          title: { text: `Elliott 擬合結果 (${dim}) — R² = ${res.r2.toFixed(4)}`, font: { size: 14 } },
+          xaxis: { title: "Photon Energy (eV)" },
+          yaxis: { title: "Absorbance (a.u.)" },
+          margin: { l: 55, r: 25, t: 35, b: 45 },
+          legend: { orientation: "h", y: 1.12 }
+        });
+
+        // 建立 Origin 匯出字串
+        let lines = ["Energy(eV)\tAbs_Exp\tFit_Total\tExciton\tContinuum"];
+        for (let i = 0; i < res.E_used.length; i++) {
+          lines.push(`${res.E_used[i].toFixed(6)}\t${res.A_used[i].toFixed(6)}\t${res.tot[i].toFixed(6)}\t${res.exc[i].toFixed(6)}\t${res.cont[i].toFixed(6)}`);
+        }
+        exportTextData = lines.join("\n");
+        document.getElementById("btnExportOrigin").disabled = false;
+
+      } catch (err) {
+        alert("擬合發生錯誤: " + err);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "開始執行擬合 (Run Fit)";
+      }
+    }
+
+    // 6. 匯出 Origin 檔案
+    function exportOriginFile() {
+      if (!exportTextData) return;
+      const blob = new Blob([exportTextData], { type: "text/plain;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "elliott_curves_origin.txt";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // 7. 載入測試範例數據
+    function loadSampleData() {
+      const sample = `1.400000\t0.006497
+1.450000\t0.001200
+1.500000\t0.003000
+1.550000\t0.005000
+1.600000\t0.030000
+1.620000\t0.100000
+1.640000\t0.355000
+1.650000\t0.576000
+1.660000\t0.776000
+1.670000\t0.660000
+1.680000\t0.427000
+1.690000\t0.250000
+1.700000\t0.146000
+1.720000\t0.045000
+1.750000\t0.035000
+1.800000\t0.004000
+1.850000\t0.002000`;
+      document.getElementById("rawTextArea").value = sample;
+      updatePlotWithData();
+    }
+  </script>
+</body>
+</html>
