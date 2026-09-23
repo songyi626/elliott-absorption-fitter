@@ -6,6 +6,8 @@
   <title>吸收光譜擬合工具 — Elliott Formula (激子 + 連續態)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <!-- Pyodide 瀏覽器原生 Python 運算核心 -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 min-h-screen">
 
@@ -14,10 +16,11 @@
     <div class="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
       <div>
         <h1 class="text-lg font-bold text-slate-900">吸收光譜擬合工具 — Elliott Formula (激子 + 連續態)</h1>
-        <p class="text-xs text-slate-500">完整版功能・支援 2D / 3D 鈣鈦礦・參數邊界與 Vary 獨立控制・Origin 格式匯出</p>
+        <p class="text-xs text-slate-500">純前端本機運算・無須後端伺服器・完整參數邊界與 Vary 控制・支援 Origin 格式匯出</p>
       </div>
-      <div id="statusBadge" class="text-xs bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200 font-medium">
-        系統就緒
+      <div id="statusBadge" class="flex items-center space-x-2 text-xs bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full border border-amber-200 font-medium">
+        <span class="inline-block w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
+        <span>正在載入純前端 Python 科學運算環境 (NumPy / SciPy)...</span>
       </div>
     </div>
   </header>
@@ -68,13 +71,13 @@
         </div>
       </div>
 
-      <!-- 3. 擬合參數設定完整表格 (初始值 / 下限 / 上限 / 擬合勾選) -->
+      <!-- 3. 擬合參數設定完整表格 (初始值 / 下限 / 上限 / 參與擬合) -->
       <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-2.5">
         <div class="flex justify-between items-center border-b pb-1.5">
           <h2 class="font-bold text-xs text-slate-800">3. 擬合參數設定 (初始值 / 下限 / 上限 / 參與擬合)</h2>
         </div>
 
-        <button onclick="autoEstimateParameters()" class="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold border border-emerald-300 py-1.5 rounded text-xs transition">
+        <button id="btnAutoEst" onclick="autoEstimateParameters()" disabled class="w-full bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-800 font-bold border border-emerald-300 py-1.5 rounded text-xs transition">
           ⚡ 自動估算初始值 (依目前選擇範圍的資料)
         </button>
 
@@ -82,7 +85,7 @@
           提示：Eg（能隙）與 E0（激子束縛參數）最關鍵；Γex/Γc 影響曲線寬窄；b 影響高能側形狀。
         </p>
 
-        <!-- 參數表格 -->
+        <!-- 完整 6 參數設定表格 -->
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs border-collapse">
             <thead>
@@ -95,7 +98,7 @@
               </tr>
             </thead>
             <tbody id="paramTableBody" class="divide-y divide-slate-100 font-mono text-[11px]">
-              <!-- 由 JS 自動填入 6 個參數 -->
+              <!-- JS 動態生成 -->
             </tbody>
           </table>
         </div>
@@ -113,7 +116,6 @@
             <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">演算法:</label>
             <select id="methodSelect" class="w-full border border-slate-200 rounded px-1.5 py-1 text-xs bg-white">
               <option value="leastsq">leastsq (Levenberg-Marquardt)</option>
-              <option value="least_squares">least_squares (TRF)</option>
               <option value="nelder">Nelder-Mead (Simplex)</option>
             </select>
           </div>
@@ -127,7 +129,7 @@
           </div>
         </div>
 
-        <button id="btnRunFit" onclick="executeFitting()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded text-xs shadow transition mt-2">
+        <button id="btnRunFit" onclick="executeFitting()" disabled class="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-2 rounded text-xs shadow transition mt-2">
           開始擬合 (Fit)
         </button>
       </div>
@@ -160,7 +162,7 @@
               </tr>
             </thead>
             <tbody id="resultTableBody" class="divide-y divide-slate-100 font-mono text-[11px]">
-              <!-- JS 動態產生 -->
+              <!-- JS 動態生成 -->
             </tbody>
           </table>
         </div>
@@ -187,9 +189,12 @@ Reduced chi-square = -
   </main>
 
   <script>
-    // 指向 Render 後端 API 端點
-    const BACKEND_API = "https://ncpl-lab-equipment-system.onrender.com/api/fit-elliott";
+    let pyodide = null;
+    let fullData = null;
+    let isSelectingSpan = false;
+    let lastFitResults = null;
 
+    // 參數完整定義 (對應 PARAM_INFO)
     const PARAM_CONFIG = [
       { key: "alpha0", label: "α0 (整體振幅)", default: 1.0, min: 0.0, max: 1e6 },
       { key: "E0", label: "E0 (激子雷德堡能量, eV)", default: 0.03, min: 0.0001, max: 1.0 },
@@ -199,15 +204,231 @@ Reduced chi-square = -
       { key: "b", label: "b (非拋物線參數)", default: 0.3, min: -5.0, max: 5.0 }
     ];
 
-    let fullData = null;
-    let isSelectingSpan = false;
-    let lastFitResults = null;
-
     window.onload = function() {
       buildParamTable();
       buildEmptyResultTable();
       initPlot();
+      initPyodideCore();
     };
+
+    // 1. 在前端初始化 Pyodide 核心
+    async function initPyodideCore() {
+      try {
+        pyodide = await loadPyodide();
+        await pyodide.loadPackage(["numpy", "scipy"]);
+
+        // 注入包含數值防護的 Elliott 完整演算法
+        await pyodide.runPythonAsync(`
+import numpy as np
+from scipy.signal import find_peaks, peak_widths
+from scipy.optimize import least_squares, minimize
+import json
+
+EPS = 1e-8
+
+def sech(x):
+    x = np.asarray(x, dtype=float)
+    out = np.empty_like(x)
+    big = np.abs(x) > 30
+    out[big] = 0.0
+    out[~big] = 1.0 / np.cosh(x[~big])
+    return out
+
+def exciton_term_raw(E, E0, Eg, Gamma_ex, n_max=8, dim="2D"):
+    E = np.asarray(E, dtype=float)
+    total = np.zeros_like(E)
+    for n in range(1, int(n_max) + 1):
+        if dim == "2D":
+            m = n - 0.5
+            Eb_n = E0 / (m ** 2)
+            coeff = (4.0 * E0) / (m ** 3)
+        else:
+            m = float(n)
+            Eb_n = E0 / (m ** 2)
+            coeff = (2.0 * E0) / (m ** 3)
+        total += coeff * sech((E - Eg + Eb_n) / Gamma_ex)
+    return total
+
+def _continuum_factor(x, Eg, E0, dim="2D"):
+    x = np.asarray(x, dtype=float)
+    denom = x - Eg
+    safe_denom = np.where(denom < EPS, EPS, denom)
+    sqrt_term = np.sqrt(np.maximum(E0, 0.0) / safe_denom)
+    if dim == "2D":
+        return 2.0 / (1.0 + np.exp(-2.0 * np.pi * sqrt_term))
+    else:
+        exp_term = np.exp(-2.0 * np.pi * sqrt_term)
+        num = 2.0 * np.pi * np.sqrt(np.maximum(E0, 0.0))
+        return num / (1.0 - exp_term + EPS)
+
+def continuum_term_raw(E_array, Eg, E0, Gamma_c, b, n_max=8, x_upper=10.0, n_grid=150, dim="2D"):
+    E_array = np.asarray(E_array, dtype=float)
+    x = np.linspace(Eg, Eg + x_upper, n_grid)
+    denom = 1.0 - b * (x - Eg)
+    denom = np.where(np.abs(denom) < EPS, np.where(denom >= 0, EPS, -EPS), denom)
+    F_effective = _continuum_factor(x, Eg, E0, dim=dim)
+    diff = E_array[:, None] - x[None, :]
+    integrand_core = (sech(diff / Gamma_c) * F_effective[None, :]) / denom[None, :]
+    return np.trapezoid(integrand_core, x, axis=1)
+
+def run_estimate_py(E, A, dim, user_E0, emin, emax):
+    E = np.asarray(E, dtype=float)
+    A = np.asarray(A, dtype=float)
+    order = np.argsort(E)
+    E, A = E[order], A[order]
+
+    mask = (E >= emin) & (E <= emax)
+    E_sub = E[mask]
+    A_sub = A[mask]
+    if len(E_sub) < 5:
+        E_sub, A_sub = E, A
+
+    A_max = float(np.max(A_sub))
+    A_min = float(np.min(A_sub))
+    alpha0 = max(A_max, 1e-6)
+    E0_guess = user_E0 if (user_E0 is not None and user_E0 > 0) else (0.04 if dim == "2D" else 0.03)
+
+    prominence = 0.05 * (A_max - A_min) if A_max > A_min else None
+    peaks, props = find_peaks(A_sub, prominence=prominence)
+    if len(peaks) > 0:
+        best_idx = peaks[int(np.argmax(props["prominences"]))]
+        E_peak = E_sub[best_idx]
+        widths_res = peak_widths(A_sub, [best_idx], rel_height=0.5)
+        dE = float(np.mean(np.diff(E_sub))) if len(E_sub) > 1 else 1.0
+        fwhm = widths_res[0][0] * dE
+        g_ex = max(fwhm / 2.634, 0.005)
+        Eg = float(E_peak + 4.0 * E0_guess) if dim == "2D" else float(E_peak + E0_guess)
+    else:
+        dA = np.gradient(A_sub, E_sub)
+        Eg = float(E_sub[np.argmax(dA)])
+        g_ex = 0.02
+
+    g_c = max(g_ex * 1.5, 0.02)
+    return [float(alpha0), float(E0_guess), float(Eg), float(g_ex), float(g_c), 0.1]
+
+def run_fit_py(E_raw, A_raw, emin, emax, dim, n_max, x_upper, method, params_json):
+    E_arr = np.asarray(E_raw, dtype=float)
+    A_arr = np.asarray(A_raw, dtype=float)
+    order = np.argsort(E_arr)
+    E_arr, A_arr = E_arr[order], A_arr[order]
+
+    mask = (E_arr >= emin) & (E_arr <= emax)
+    E_used = E_arr[mask]
+    A_used = A_arr[mask]
+    if len(E_used) < 6:
+        raise ValueError("選取範圍內的數據點過少 (至少需要 6 點)")
+
+    p_dict = json.loads(params_json)
+    keys = ["alpha0", "E0", "Eg", "Gamma_ex", "Gamma_c", "b"]
+
+    vary_keys = [k for k in keys if p_dict[k]["vary"]]
+    fixed_keys = [k for k in keys if not p_dict[k]["vary"]]
+
+    p0 = [p_dict[k]["value"] for k in vary_keys]
+    bounds_lb = [p_dict[k]["min"] for k in vary_keys]
+    bounds_ub = [p_dict[k]["max"] for k in vary_keys]
+
+    # 確保初始值嚴格在邊界內
+    for i in range(len(p0)):
+        p0[i] = np.clip(p0[i], bounds_lb[i] + 1e-6, bounds_ub[i] - 1e-6)
+
+    def unpack_params(p_vary):
+        cur = {}
+        for k in fixed_keys:
+            cur[k] = p_dict[k]["value"]
+        for idx, k in enumerate(vary_keys):
+            cur[k] = p_vary[idx]
+        return cur
+
+    def model_func(p_vary):
+        c = unpack_params(p_vary)
+        exc = c["alpha0"] * exciton_term_raw(E_used, c["E0"], c["Eg"], c["Gamma_ex"], n_max, dim)
+        cont = c["alpha0"] * continuum_term_raw(E_used, c["Eg"], c["E0"], c["Gamma_c"], c["b"], n_max, x_upper, 150, dim)
+        return exc + cont
+
+    def residual(p_vary):
+        return model_func(p_vary) - A_used
+
+    if method == "nelder":
+        res_opt = minimize(lambda p: np.sum(residual(p)**2), p0, method='Nelder-Mead')
+        p_opt_vary = res_opt.x
+        success = res_opt.success
+        msg = str(res_opt.message)
+        stderr_map = {k: None for k in keys}
+    else: # leastsq
+        res_opt = least_squares(residual, p0, bounds=(bounds_lb, bounds_ub), method='trf', max_nfev=1500)
+        p_opt_vary = res_opt.x
+        success = res_opt.success
+        msg = str(res_opt.message)
+
+        # 計算標準誤差
+        stderr_map = {}
+        try:
+            _, s, VT = np.linalg.svd(res_opt.jac, full_matrices=False)
+            threshold = np.finfo(float).eps * max(res_opt.jac.shape) * s[0]
+            s = s[s > threshold]
+            VT = VT[:len(s)]
+            pcov = np.dot(VT.T / (s**2), VT)
+            cost = 2 * res_opt.cost
+            s_sq = cost / (len(A_used) - len(p0))
+            pcov = pcov * s_sq
+            for idx, k in enumerate(vary_keys):
+                stderr_map[k] = float(np.sqrt(np.diag(pcov)[idx]))
+        except Exception:
+            for k in vary_keys:
+                stderr_map[k] = None
+        for k in fixed_keys:
+            stderr_map[k] = None
+
+    p_final = unpack_params(p_opt_vary)
+
+    exc = p_final["alpha0"] * exciton_term_raw(E_used, p_final["E0"], p_final["Eg"], p_final["Gamma_ex"], n_max, dim)
+    cont = p_final["alpha0"] * continuum_term_raw(E_used, p_final["Eg"], p_final["E0"], p_final["Gamma_c"], p_final["b"], n_max, x_upper, 150, dim)
+    tot = exc + cont
+
+    ss_res = float(np.sum((A_used - tot) ** 2))
+    ss_tot = float(np.sum((A_used - np.mean(A_used)) ** 2))
+    r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else 0.0
+    dof = max(len(A_used) - len(vary_keys), 1)
+    redchi = float(ss_res / dof)
+
+    if dim == "2D":
+        Eb_n1 = 4.0 * p_final["E0"]
+        eb_str = "4×E0"
+    else:
+        Eb_n1 = p_final["E0"]
+        eb_str = "E0"
+    Eex_n1 = p_final["Eg"] - Eb_n1
+
+    return json.dumps({
+        "success": bool(success),
+        "message": msg,
+        "r2": r2,
+        "redchi": redchi,
+        "ss_res": ss_res,
+        "Eb_n1": Eb_n1,
+        "eb_str": eb_str,
+        "Eex_n1": Eex_n1,
+        "p_final": p_final,
+        "stderr_map": stderr_map,
+        "E_used": E_used.tolist(),
+        "A_used": A_used.tolist(),
+        "exc": exc.tolist(),
+        "cont": cont.tolist(),
+        "tot": tot.tolist()
+    })
+`);
+
+        const badge = document.getElementById("statusBadge");
+        badge.className = "text-xs bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full border border-emerald-200 font-medium";
+        badge.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1.5"></span><span>本機運算核心已就緒 (純前端執行)</span>`;
+
+        document.getElementById("btnAutoEst").disabled = false;
+        document.getElementById("btnRunFit").disabled = false;
+      } catch (err) {
+        document.getElementById("statusBadge").innerText = "運算核心載入失敗: " + err;
+      }
+    }
 
     function buildParamTable() {
       const tbody = document.getElementById("paramTableBody");
@@ -355,54 +576,41 @@ Reduced chi-square = -
       setupPlotlyEvents();
     }
 
-    // 自動估算初始值 (1:1 還原 estimator.py)
-    function autoEstimateParameters() {
+    // 依選定範圍呼叫 Python 估算初猜值
+    async function autoEstimateParameters() {
       if (!fullData) { alert("請先匯入實驗數據。"); return; }
+      if (!pyodide) { alert("運算環境尚未載入完成。"); return; }
+
       const emin = parseFloat(document.getElementById("eminInput").value) || Math.min(...fullData.E);
       const emax = parseFloat(document.getElementById("emaxInput").value) || Math.max(...fullData.E);
       const dim = document.getElementById("dimSelect").value;
       const userE0 = parseFloat(document.getElementById("val_E0").value) || (dim === "2D" ? 0.04 : 0.03);
 
-      let subE = [], subA = [];
-      for (let i = 0; i < fullData.E.length; i++) {
-        if (fullData.E[i] >= emin && fullData.E[i] <= emax) {
-          subE.push(fullData.E[i]);
-          subA.push(fullData.A[i]);
-        }
-      }
-      if (subE.length < 5) { alert("目前選擇範圍內數據點過少，無法估算，請先擴大範圍。"); return; }
+      pyodide.globals.set("e_est", fullData.E);
+      pyodide.globals.set("a_est", fullData.A);
+      pyodide.globals.set("dim_est", dim);
+      pyodide.globals.set("user_e0_est", userE0);
+      pyodide.globals.set("emin_est", emin);
+      pyodide.globals.set("emax_est", emax);
 
-      const aMax = Math.max(...subA);
-      const aMin = Math.min(...subA);
-      const alpha0 = Math.max(aMax, 1e-6);
+      let est = await pyodide.runPythonAsync(`run_estimate_py(e_est, a_est, dim_est, user_e0_est, emin_est, emax_est)`);
+      est = est.toJs();
 
-      let peakIdx = subA.indexOf(aMax);
-      let peakE = subE[peakIdx];
-      let egGuess, gammaEx;
-
-      let halfHeight = aMin + (aMax - aMin) * 0.5;
-      let left = peakIdx, right = peakIdx;
-      while (left > 0 && subA[left] > halfHeight) left--;
-      while (right < subA.length - 1 && subA[right] > halfHeight) right++;
-      let fwhm = Math.max(subE[right] - subE[left], 0.015);
-      gammaEx = Math.max(fwhm / 2.634, 0.005);
-
-      if (dim === "2D") {
-        egGuess = peakE + 4.0 * userE0;
-      } else {
-        egGuess = peakE + userE0;
-      }
-
-      setParamRow("alpha0", alpha0, Math.max(alpha0 * 0.1, 1e-5), alpha0 * 5);
-      setParamRow("E0", userE0, 0.0001, 1.0);
+      // alpha0
+      setParamRow("alpha0", est[0], Math.max(est[0] * 0.1, 1e-5), est[0] * 5);
+      // E0
+      setParamRow("E0", est[1], 0.0001, 1.0);
+      // Eg
       let halfWindow = Math.max((emax - emin) * 0.5, 0.3);
-      setParamRow("Eg", egGuess, egGuess - halfWindow, egGuess + halfWindow);
-      setParamRow("Gamma_ex", gammaEx, Math.max(gammaEx * 0.1, 1e-5), gammaEx * 5);
-      let gammaC = Math.max(gammaEx * 1.5, 0.02);
-      setParamRow("Gamma_c", gammaC, Math.max(gammaC * 0.1, 1e-5), gammaC * 5);
-      setParamRow("b", 0.1, -5.0, 5.0);
+      setParamRow("Eg", est[2], est[2] - halfWindow, est[2] + halfWindow);
+      // Gamma_ex
+      setParamRow("Gamma_ex", est[3], Math.max(est[3] * 0.1, 1e-5), est[3] * 5);
+      // Gamma_c
+      setParamRow("Gamma_c", est[4], Math.max(est[4] * 0.1, 1e-5), est[4] * 5);
+      // b
+      setParamRow("b", est[5], -5.0, 5.0);
 
-      alert(`已根據目前範圍 (${emin.toFixed(3)} ~ ${emax.toFixed(3)} eV) 與 ${dim} 模型自動估算初始值！\n能隙 Eg ≈ ${egGuess.toFixed(4)} eV`);
+      alert(`已根據目前範圍 (${emin.toFixed(4)} ~ ${emax.toFixed(4)} eV) 與 ${dim} 模型自動估算初始值！\n能隙 Eg ≈ ${est[2].toFixed(4)} eV, E0 = ${est[1]} eV`);
     }
 
     function setParamRow(key, val, min, max) {
@@ -411,15 +619,17 @@ Reduced chi-square = -
       document.getElementById(`max_${key}`).value = max.toFixed(4);
     }
 
-    // 呼叫雲端極速執行擬合
+    // 純前端執行 Python 擬合演算法
     async function executeFitting() {
       if (!fullData) { alert("請先匯入實驗數據。"); return; }
+      if (!pyodide) { alert("Python 運算核心尚未載入。"); return; }
+
       const emin = parseFloat(document.getElementById("eminInput").value) || Math.min(...fullData.E);
       const emax = parseFloat(document.getElementById("emaxInput").value) || Math.max(...fullData.E);
 
-      let userValues = {};
+      let pDict = {};
       PARAM_CONFIG.forEach(cfg => {
-        userValues[cfg.key] = {
+        pDict[cfg.key] = {
           value: parseFloat(document.getElementById(`val_${cfg.key}`).value),
           min: parseFloat(document.getElementById(`min_${cfg.key}`).value),
           max: parseFloat(document.getElementById(`max_${cfg.key}`).value),
@@ -427,81 +637,67 @@ Reduced chi-square = -
         };
       });
 
-      const payload = {
-        E: fullData.E,
-        A: fullData.A,
-        emin: emin,
-        emax: emax,
-        dim: document.getElementById("dimSelect").value,
-        n_max: parseInt(document.getElementById("nmaxInput").value) || 8,
-        x_upper: parseFloat(document.getElementById("xupperInput").value) || 10.0,
-        method: document.getElementById("methodSelect").value,
-        user_values: userValues
-      };
-
       const btn = document.getElementById("btnRunFit");
       btn.disabled = true;
       btn.innerText = "擬合執行中，請稍候...";
-      document.getElementById("statusBadge").innerText = "伺服器高速運算中...";
-      document.getElementById("statusBadge").className = "text-xs bg-amber-50 text-amber-700 px-3 py-1 rounded-full border border-amber-200 font-medium";
 
-      try {
-        const resp = await fetch(BACKEND_API, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
+      setTimeout(async () => {
+        try {
+          pyodide.globals.set("e_fit", fullData.E);
+          pyodide.globals.set("a_fit", fullData.A);
+          pyodide.globals.set("emin_fit", emin);
+          pyodide.globals.set("emax_fit", emax);
+          pyodide.globals.set("dim_fit", document.getElementById("dimSelect").value);
+          pyodide.globals.set("nmax_fit", parseInt(document.getElementById("nmaxInput").value) || 8);
+          pyodide.globals.set("xupper_fit", parseFloat(document.getElementById("xupperInput").value) || 10.0);
+          pyodide.globals.set("method_fit", document.getElementById("methodSelect").value);
+          pyodide.globals.set("params_fit_json", JSON.stringify(pDict));
 
-        if (!resp.ok) {
-          const err = await resp.json();
-          throw new Error(err.detail || "擬合失敗");
+          let resJson = await pyodide.runPythonAsync(`
+run_fit_py(e_fit, a_fit, emin_fit, emax_fit, dim_fit, nmax_fit, xupper_fit, method_fit, params_fit_json)
+          `);
+          const res = JSON.parse(resJson);
+
+          // 填入結果表格
+          PARAM_CONFIG.forEach(cfg => {
+            const val = res.p_final[cfg.key];
+            const err = res.stderr_map[cfg.key];
+            document.getElementById(`res_val_${cfg.key}`).innerText = `${val.toFixed(6)}`;
+            document.getElementById(`res_err_${cfg.key}`).innerText = err !== null ? `${err.toFixed(4)}` : (pDict[cfg.key].vary ? "N/A" : "固定值");
+          });
+
+          // 填入統計報告
+          let statsReport = `模型維度: ${document.getElementById("dimSelect").value}\n` +
+            `擬合是否成功: ${res.success ? '是' : '否'}\n` +
+            `R^2 = ${res.r2.toFixed(6)}\n` +
+            `Reduced chi-square = ${res.redchi.toExponential(4)}\n` +
+            `殘差平方和 (SSR) = ${res.ss_res.toExponential(4)}\n` +
+            `基態(n=1)激子束縛能 Eb(n=1) = ${res.eb_str} = ${res.Eb_n1.toFixed(6)} eV\n` +
+            `基態(n=1)激子峰理論位置 Eex(n=1) = Eg-Eb(n=1) = ${res.Eex_n1.toFixed(6)} eV\n` +
+            `擬合範圍: ${emin.toFixed(4)} - ${emax.toFixed(4)} eV, 點數: ${res.E_used.length}\n` +
+            `優化器訊息: ${res.message}`;
+          document.getElementById("statsTextBox").innerText = statsReport;
+
+          // 繪圖
+          const tExp = { x: fullData.E, y: fullData.A, mode: "markers", name: "Experimental data", marker: { color: "#000", size: 3.5 } };
+          const tExc = { x: res.E_used, y: res.exc, mode: "lines", name: "Excitonic absorption α_ext", line: { color: "#f97316", dash: "dash", width: 2 } };
+          const tCont = { x: res.E_used, y: res.cont, mode: "lines", name: "Continuum absorption α_cont", line: { color: "#10b981", dash: "dashdot", width: 2 } };
+          const tTot = { x: res.E_used, y: res.tot, mode: "lines", name: "Total fit", line: { color: "#ef4444", width: 2.2 } };
+
+          Plotly.react("plotDiv", [tExp, tExc, tCont, tTot], getLayout());
+          setupPlotlyEvents();
+
+          lastFitResults = { res, statsReport, emin, emax };
+          document.getElementById("btnExportCurves").disabled = false;
+          document.getElementById("btnExportParams").disabled = false;
+
+        } catch (err) {
+          alert("擬合發生錯誤: " + err);
+        } finally {
+          btn.disabled = false;
+          btn.innerText = "開始擬合 (Fit)";
         }
-
-        const res = await resp.json();
-
-        // 填入結果表格 (包含擬合值與標準誤差)
-        PARAM_CONFIG.forEach(cfg => {
-          const pInfo = res.params[cfg.key];
-          document.getElementById(`res_val_${cfg.key}`).innerText = `${pInfo.value.toFixed(6)}`;
-          document.getElementById(`res_err_${cfg.key}`).innerText = pInfo.stderr !== null ? `${pInfo.stderr.toFixed(4)}` : "N/A";
-        });
-
-        // 填入統計方塊
-        let statsReport = `模型維度: ${payload.dim}\n` +
-          `擬合是否成功: 是\n` +
-          `R^2 = ${res.r2.toFixed(6)}\n` +
-          `Reduced chi-square = ${res.redchi.toExponential(4)}\n` +
-          `殘差平方和 (SSR) = ${res.ss_res.toExponential(4)}\n` +
-          `基態(n=1)激子束縛能 Eb(n=1) = ${res.eb_str} = ${res.Eb_n1.toFixed(6)} eV\n` +
-          `基態(n=1)激子峰理論位置 Eex(n=1) = Eg-Eb(n=1) = ${res.Eex_n1.toFixed(6)} eV\n` +
-          `擬合範圍: ${emin.toFixed(4)} - ${emax.toFixed(4)} eV, 點數: ${res.E_used.length}\n` +
-          `lmfit 訊息: ${res.message}`;
-        document.getElementById("statsTextBox").innerText = statsReport;
-
-        // 繪製四線圖
-        const tExp = { x: fullData.E, y: fullData.A, mode: "markers", name: "Experimental data", marker: { color: "#000", size: 3.5 } };
-        const tExc = { x: res.E_used, y: res.exc, mode: "lines", name: "Excitonic absorption α_ext", line: { color: "#f97316", dash: "dash", width: 2 } };
-        const tCont = { x: res.E_used, y: res.cont, mode: "lines", name: "Continuum absorption α_cont", line: { color: "#10b981", dash: "dashdot", width: 2 } };
-        const tTot = { x: res.E_used, y: res.tot, mode: "lines", name: "Total fit", line: { color: "#ef4444", width: 2.2 } };
-
-        Plotly.react("plotDiv", [tExp, tExc, tCont, tTot], getLayout());
-        setupPlotlyEvents();
-
-        lastFitResults = {
-          res, statsReport, emin, emax, filename: fullData.filename
-        };
-
-        document.getElementById("btnExportCurves").disabled = false;
-        document.getElementById("btnExportParams").disabled = false;
-        document.getElementById("statusBadge").innerText = "擬合完成";
-        document.getElementById("statusBadge").className = "text-xs bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200 font-semibold";
-
-      } catch (err) {
-        alert("擬合發生錯誤: " + err.message);
-      } finally {
-        btn.disabled = false;
-        btn.innerText = "開始擬合 (Fit)";
-      }
+      }, 50);
     }
 
     function exportCurvesFile() {
