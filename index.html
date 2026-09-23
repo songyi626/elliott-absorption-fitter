@@ -16,7 +16,7 @@
         <h1 class="text-lg font-bold text-slate-900">吸收光譜擬合工具 — Elliott Formula (激子 + 連續態)</h1>
         <p class="text-xs text-slate-500">完整版功能・支援 2D / 3D 鈣鈦礦・參數邊界與 Vary 獨立控制・Origin 格式匯出</p>
       </div>
-      <div id="statusBadge" class="text-xs bg-slate-100 text-slate-600 px-3 py-1.5 rounded-full border border-slate-200 font-medium">
+      <div id="statusBadge" class="text-xs bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200 font-medium">
         系統就緒
       </div>
     </div>
@@ -88,9 +88,9 @@
             <thead>
               <tr class="bg-slate-50 text-slate-600 border-b">
                 <th class="py-1 px-1.5 font-semibold">參數</th>
-                <th class="py-1 px-1 font-semibold w-20">初始值</th>
-                <th class="py-1 px-1 font-semibold w-16">下限</th>
-                <th class="py-1 px-1 font-semibold w-16">上限</th>
+                <th class="py-1 px-1 font-semibold w-24">初始值</th>
+                <th class="py-1 px-1 font-semibold w-20">下限</th>
+                <th class="py-1 px-1 font-semibold w-20">上限</th>
                 <th class="py-1 px-1 font-semibold text-center w-10">擬合</th>
               </tr>
             </thead>
@@ -100,7 +100,7 @@
           </table>
         </div>
 
-        <!-- 額外高階選項 (維度、n_max、x_upper、演算法) -->
+        <!-- 額外高階選項 -->
         <div class="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2 text-xs">
           <div>
             <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">模型維度:</label>
@@ -113,11 +113,12 @@
             <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">演算法:</label>
             <select id="methodSelect" class="w-full border border-slate-200 rounded px-1.5 py-1 text-xs bg-white">
               <option value="leastsq">leastsq (Levenberg-Marquardt)</option>
+              <option value="least_squares">least_squares (TRF)</option>
               <option value="nelder">Nelder-Mead (Simplex)</option>
             </select>
           </div>
           <div>
-            <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">n_max (激子求和項數):</label>
+            <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">n_max (激子項數):</label>
             <input type="number" id="nmaxInput" value="8" min="1" max="30" class="w-full border border-slate-200 rounded px-1.5 py-1 text-xs">
           </div>
           <div>
@@ -149,14 +150,13 @@
       <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
         <h3 class="font-bold text-xs text-slate-800 border-b pb-1.5">5. 擬合結果</h3>
 
-        <!-- 結果數值列表 -->
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs border-collapse">
             <thead>
               <tr class="bg-slate-50 text-slate-600 border-b">
                 <th class="py-1 px-2 font-semibold">參數</th>
                 <th class="py-1 px-2 font-semibold">擬合值</th>
-                <th class="py-1 px-2 font-semibold">設定狀態</th>
+                <th class="py-1 px-2 font-semibold">標準誤差</th>
               </tr>
             </thead>
             <tbody id="resultTableBody" class="divide-y divide-slate-100 font-mono text-[11px]">
@@ -165,7 +165,7 @@
           </table>
         </div>
 
-        <!-- 統計與衍生量文字區塊 (還原 text_stats) -->
+        <!-- 統計與衍生量文字區塊 (1:1 還原 text_stats) -->
         <div class="bg-slate-50 border border-slate-200 rounded p-2.5 font-mono text-[11px] text-slate-700 whitespace-pre-line leading-relaxed" id="statsTextBox">
 R^2 = -
 Reduced chi-square = -
@@ -187,21 +187,22 @@ Reduced chi-square = -
   </main>
 
   <script>
-    // 參數定義清單 (完全對照 PARAM_INFO)
+    // 指向 Render 後端 API 端點
+    const BACKEND_API = "https://ncpl-lab-equipment-system.onrender.com/api/fit-elliott";
+
     const PARAM_CONFIG = [
       { key: "alpha0", label: "α0 (整體振幅)", default: 1.0, min: 0.0, max: 1e6 },
-      { key: "E0", label: "E0 (激子雷德堡, eV)", default: 0.03, min: 0.0001, max: 1.0 },
+      { key: "E0", label: "E0 (激子雷德堡能量, eV)", default: 0.03, min: 0.0001, max: 1.0 },
       { key: "Eg", label: "Eg (能隙, eV)", default: 1.7, min: 0.0, max: 10.0 },
       { key: "Gamma_ex", label: "Γex (激子展寬, eV)", default: 0.02, min: 0.0001, max: 1.0 },
       { key: "Gamma_c", label: "Γc (連續態展寬, eV)", default: 0.05, min: 0.0001, max: 1.0 },
       { key: "b", label: "b (非拋物線參數)", default: 0.3, min: -5.0, max: 5.0 }
     ];
 
-    let fullData = null; // { E, A }
+    let fullData = null;
     let isSelectingSpan = false;
     let lastFitResults = null;
 
-    // 初始化介面表格
     window.onload = function() {
       buildParamTable();
       buildEmptyResultTable();
@@ -232,13 +233,12 @@ Reduced chi-square = -
         tr.innerHTML = `
           <td class="py-1 px-2 font-sans text-slate-700">${p.label}</td>
           <td id="res_val_${p.key}" class="py-1 px-2 text-slate-500">-</td>
-          <td id="res_vary_${p.key}" class="py-1 px-2 text-slate-400 text-[10px]">-</td>
+          <td id="res_err_${p.key}" class="py-1 px-2 text-slate-400 text-[10px]">-</td>
         `;
         tbody.appendChild(tr);
       });
     }
 
-    // ================= 繪圖與範圍操作 =================
     function initPlot() {
       Plotly.newPlot("plotDiv", [], getLayout(), { responsive: true });
       setupPlotlyEvents();
@@ -310,7 +310,6 @@ Reduced chi-square = -
       Plotly.relayout("plotDiv", getLayout());
     }
 
-    // ================= 檔案載入 =================
     document.getElementById("fileInput").addEventListener("change", function(e) {
       const file = e.target.files[0];
       if (!file) return;
@@ -338,7 +337,6 @@ Reduced chi-square = -
       }
       if (E.length === 0) { alert("無法從檔案中解析出任何數值資料。"); return; }
 
-      // 遞增排序
       let zipped = E.map((e, idx) => [e, A[idx]]);
       zipped.sort((a, b) => a[0] - b[0]);
       fullData = { E: zipped.map(z => z[0]), A: zipped.map(z => z[1]), filename: name };
@@ -357,7 +355,7 @@ Reduced chi-square = -
       setupPlotlyEvents();
     }
 
-    // ================= 自動估算初始值 (依選擇範圍與維度) =================
+    // 自動估算初始值 (1:1 還原 estimator.py)
     function autoEstimateParameters() {
       if (!fullData) { alert("請先匯入實驗數據。"); return; }
       const emin = parseFloat(document.getElementById("eminInput").value) || Math.min(...fullData.E);
@@ -378,12 +376,10 @@ Reduced chi-square = -
       const aMin = Math.min(...subA);
       const alpha0 = Math.max(aMax, 1e-6);
 
-      // 尋找吸收峰
       let peakIdx = subA.indexOf(aMax);
       let peakE = subE[peakIdx];
       let egGuess, gammaEx;
 
-      // 簡易半高寬
       let halfHeight = aMin + (aMax - aMin) * 0.5;
       let left = peakIdx, right = peakIdx;
       while (left > 0 && subA[left] > halfHeight) left--;
@@ -397,20 +393,16 @@ Reduced chi-square = -
         egGuess = peakE + userE0;
       }
 
-      // 依據 estimator.py 策略動態賦值
       setParamRow("alpha0", alpha0, Math.max(alpha0 * 0.1, 1e-5), alpha0 * 5);
       setParamRow("E0", userE0, 0.0001, 1.0);
-
-      // Eg 限制在半視窗
       let halfWindow = Math.max((emax - emin) * 0.5, 0.3);
       setParamRow("Eg", egGuess, egGuess - halfWindow, egGuess + halfWindow);
-
       setParamRow("Gamma_ex", gammaEx, Math.max(gammaEx * 0.1, 1e-5), gammaEx * 5);
       let gammaC = Math.max(gammaEx * 1.5, 0.02);
       setParamRow("Gamma_c", gammaC, Math.max(gammaC * 0.1, 1e-5), gammaC * 5);
       setParamRow("b", 0.1, -5.0, 5.0);
 
-      alert(`已根據目前範圍 (${emin.toFixed(3)} ~ ${emax.toFixed(3)} eV) 與 ${dim} 模型自動估算初始值！\n能隙 Eg ≈ ${egGuess.toFixed(4)} eV, E0 = ${userE0} eV`);
+      alert(`已根據目前範圍 (${emin.toFixed(3)} ~ ${emax.toFixed(3)} eV) 與 ${dim} 模型自動估算初始值！\n能隙 Eg ≈ ${egGuess.toFixed(4)} eV`);
     }
 
     function setParamRow(key, val, min, max) {
@@ -419,205 +411,105 @@ Reduced chi-square = -
       document.getElementById(`max_${key}`).value = max.toFixed(4);
     }
 
-    // ================= Elliott 模型純數值計算核心 =================
-    function sech(x) {
-      return Math.abs(x) > 30 ? 0.0 : 1.0 / Math.cosh(x);
-    }
-
-    function excitonTerm(E, E0, Eg, Gamma_ex, n_max, dim) {
-      let total = 0.0;
-      for (let n = 1; n <= n_max; n++) {
-        let m = (dim === "2D") ? (n - 0.5) : n;
-        let Eb_n = E0 / (m * m);
-        let coeff = (dim === "2D" ? 4.0 : 2.0) * E0 / (m * m * m);
-        total += coeff * sech((E - Eg + Eb_n) / Gamma_ex);
-      }
-      return total;
-    }
-
-    function continuumFactor(x, Eg, E0, dim) {
-      let denom = Math.max(x - Eg, 1e-8);
-      let sqrtTerm = Math.sqrt(Math.max(E0, 0.0) / denom);
-      if (dim === "2D") {
-        return 2.0 / (1.0 + Math.exp(-2.0 * Math.PI * sqrtTerm));
-      } else {
-        let expTerm = Math.exp(-2.0 * Math.PI * sqrtTerm);
-        return (2.0 * Math.PI * Math.sqrt(Math.max(E0, 0.0))) / (1.0 - expTerm + 1e-8);
-      }
-    }
-
-    function continuumTerm(E, Eg, E0, Gamma_c, b, n_max, x_upper, n_grid, dim) {
-      let dx = x_upper / (n_grid - 1);
-      let sum = 0.0;
-      for (let i = 0; i < n_grid; i++) {
-        let x = Eg + i * dx;
-        let denom = 1.0 - b * (x - Eg);
-        if (Math.abs(denom) < 1e-6) denom = denom >= 0 ? 1e-6 : -1e-6;
-        let F = continuumFactor(x, Eg, E0, dim);
-        let integrand = (sech((E - x) / Gamma_c) * F) / denom;
-        let weight = (i === 0 || i === n_grid - 1) ? 0.5 : 1.0;
-        sum += integrand * weight;
-      }
-      return sum * dx;
-    }
-
-    function evalModel(E, p, n_max, x_upper, dim) {
-      let exc = excitonTerm(E, p.E0, p.Eg, p.Gamma_ex, n_max, dim);
-      let cont = continuumTerm(E, p.Eg, p.E0, p.Gamma_c, p.b, n_max, x_upper, 120, dim);
-      return p.alpha0 * (exc + cont);
-    }
-
-    // ================= 執行擬合 (Run Fit) =================
+    // 呼叫雲端極速執行擬合
     async function executeFitting() {
       if (!fullData) { alert("請先匯入實驗數據。"); return; }
       const emin = parseFloat(document.getElementById("eminInput").value) || Math.min(...fullData.E);
       const emax = parseFloat(document.getElementById("emaxInput").value) || Math.max(...fullData.E);
 
-      let subE = [], subA = [];
-      for (let i = 0; i < fullData.E.length; i++) {
-        if (fullData.E[i] >= emin && fullData.E[i] <= emax) {
-          subE.push(fullData.E[i]);
-          subA.push(fullData.A[i]);
-        }
-      }
-      if (subE.length < 6) { alert("選擇的範圍內數據點過少，請擴大擬合範圍。"); return; }
-
-      const dim = document.getElementById("dimSelect").value;
-      const n_max = parseInt(document.getElementById("nmaxInput").value) || 8;
-      const x_upper = parseFloat(document.getElementById("xupperInput").value) || 10.0;
-
-      // 讀取設定好的參數、上下限與 Vary
-      let pCurrent = {}, pMin = {}, pMax = {}, pVary = {};
+      let userValues = {};
       PARAM_CONFIG.forEach(cfg => {
-        pCurrent[cfg.key] = parseFloat(document.getElementById(`val_${cfg.key}`).value);
-        pMin[cfg.key] = parseFloat(document.getElementById(`min_${cfg.key}`).value);
-        pMax[cfg.key] = parseFloat(document.getElementById(`max_${cfg.key}`).value);
-        pVary[cfg.key] = document.getElementById(`vary_${cfg.key}`).checked;
+        userValues[cfg.key] = {
+          value: parseFloat(document.getElementById(`val_${cfg.key}`).value),
+          min: parseFloat(document.getElementById(`min_${cfg.key}`).value),
+          max: parseFloat(document.getElementById(`max_${cfg.key}`).value),
+          vary: document.getElementById(`vary_${cfg.key}`).checked
+        };
       });
+
+      const payload = {
+        E: fullData.E,
+        A: fullData.A,
+        emin: emin,
+        emax: emax,
+        dim: document.getElementById("dimSelect").value,
+        n_max: parseInt(document.getElementById("nmaxInput").value) || 8,
+        x_upper: parseFloat(document.getElementById("xupperInput").value) || 10.0,
+        method: document.getElementById("methodSelect").value,
+        user_values: userValues
+      };
 
       const btn = document.getElementById("btnRunFit");
       btn.disabled = true;
       btn.innerText = "擬合執行中，請稍候...";
-      document.getElementById("statusBadge").innerText = "擬合運算中...";
-      document.getElementById("statusBadge").className = "text-xs bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full border border-amber-200 font-medium";
+      document.getElementById("statusBadge").innerText = "伺服器高速運算中...";
+      document.getElementById("statusBadge").className = "text-xs bg-amber-50 text-amber-700 px-3 py-1 rounded-full border border-amber-200 font-medium";
 
-      setTimeout(() => {
-        try {
-          // 最佳化迴圈 (高穩定性數值優化)
-          let keysToFit = PARAM_CONFIG.map(c => c.key).filter(k => pVary[k]);
-          let iterCount = 0, maxIter = 100;
-          let bestP = { ...pCurrent };
+      try {
+        const resp = await fetch(BACKEND_API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
 
-          function getSSR(pObj) {
-            let ss = 0.0;
-            for (let i = 0; i < subE.length; i++) {
-              let ym = evalModel(subE[i], pObj, n_max, x_upper, dim);
-              let diff = ym - subA[i];
-              ss += diff * diff;
-            }
-            return ss;
-          }
-
-          let bestSSR = getSSR(bestP);
-
-          // 坐標輪換加速收斂
-          for (let it = 0; it < maxIter; it++) {
-            let improved = false;
-            for (let k of keysToFit) {
-              let val = bestP[k];
-              let span = Math.max(Math.abs(val) * 0.05, 0.001);
-              for (let step of [-span, span, -span * 0.3, span * 0.3]) {
-                let testP = { ...bestP };
-                testP[k] = Math.min(Math.max(val + step, pMin[k]), pMax[k]);
-                let ss = getSSR(testP);
-                if (ss < bestSSR) {
-                  bestSSR = ss;
-                  bestP = testP;
-                  improved = true;
-                }
-              }
-            }
-            if (!improved && it > 15) break;
-          }
-
-          // 計算拆解項與曲線
-          let excList = [], contList = [], totList = [];
-          for (let i = 0; i < subE.length; i++) {
-            let e = subE[i];
-            let excVal = bestP.alpha0 * excitonTerm(e, bestP.E0, bestP.Eg, bestP.Gamma_ex, n_max, dim);
-            let contVal = bestP.alpha0 * continuumTerm(e, bestP.Eg, bestP.E0, bestP.Gamma_c, bestP.b, n_max, x_upper, 120, dim);
-            excList.push(excVal);
-            contList.push(contVal);
-            totList.push(excVal + contVal);
-          }
-
-          // 統計量
-          let aMean = subA.reduce((a, b) => a + b, 0) / subA.length;
-          let ssTot = subA.reduce((sum, a) => sum + (a - aMean) * (a - aMean), 0);
-          let r2 = ssTot > 0 ? (1.0 - bestSSR / ssTot) : 0.0;
-          let dof = Math.max(subE.length - keysToFit.length, 1);
-          let redchi = bestSSR / dof;
-
-          // 衍生量
-          let Eb_n1 = (dim === "2D") ? (4.0 * bestP.E0) : bestP.E0;
-          let eb_label = (dim === "2D") ? "4×E0" : "E0";
-          let Eex_n1 = bestP.Eg - Eb_n1;
-
-          // 填入表格
-          PARAM_CONFIG.forEach(cfg => {
-            let fittedVal = bestP[cfg.key];
-            document.getElementById(`res_val_${cfg.key}`).innerText = `${fittedVal.toFixed(6)}`;
-            document.getElementById(`res_vary_${cfg.key}`).innerText = pVary[cfg.key] ? "參與擬合" : "固定值";
-          });
-
-          // 填入完整文字摘要 (1:1 還原)
-          let statsReport = `模型維度: ${dim}\n` +
-            `擬合是否成功: 是\n` +
-            `R^2 = ${r2.toFixed(6)}\n` +
-            `Reduced chi-square = ${redchi.toExponential(4)}\n` +
-            `殘差平方和 (SSR) = ${bestSSR.toExponential(4)}\n` +
-            `基態(n=1)激子束縛能 Eb(n=1) = ${eb_label} = ${Eb_n1.toFixed(6)} eV\n` +
-            `基態(n=1)激子峰理論位置 Eex(n=1) = Eg-Eb(n=1) = ${Eex_n1.toFixed(6)} eV\n` +
-            `擬合範圍: ${emin.toFixed(4)} - ${emax.toFixed(4)} eV, 點數: ${subE.length}\n` +
-            `求和項數 n_max = ${n_max}, 積分上限 x_upper = ${x_upper} eV`;
-          document.getElementById("statsTextBox").innerText = statsReport;
-
-          // 繪製四線疊加圖
-          const tExp = { x: fullData.E, y: fullData.A, mode: "markers", name: "Experimental data", marker: { color: "#000", size: 3.5 } };
-          const tExc = { x: subE, y: excList, mode: "lines", name: "Excitonic absorption α_ex", line: { color: "#f97316", dash: "dash", width: 2 } };
-          const tCont = { x: subE, y: contList, mode: "lines", name: "Continuum absorption α_cont", line: { color: "#10b981", dash: "dashdot", width: 2 } };
-          const tTot = { x: subE, y: totList, mode: "lines", name: "Total fit", line: { color: "#ef4444", width: 2.2 } };
-
-          Plotly.react("plotDiv", [tExp, tExc, tCont, tTot], getLayout());
-          setupPlotlyEvents();
-
-          // 存檔供匯出
-          lastFitResults = {
-            subE, subA, excList, contList, totList,
-            bestP, statsReport, dim, emin, emax
-          };
-
-          document.getElementById("btnExportCurves").disabled = false;
-          document.getElementById("btnExportParams").disabled = false;
-          document.getElementById("statusBadge").innerText = "擬合完成";
-          document.getElementById("statusBadge").className = "text-xs bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full border border-emerald-200 font-semibold";
-
-        } catch (err) {
-          alert("擬合發生錯誤: " + err);
-        } finally {
-          btn.disabled = false;
-          btn.innerText = "開始擬合 (Fit)";
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.detail || "擬合失敗");
         }
-      }, 50);
+
+        const res = await resp.json();
+
+        // 填入結果表格 (包含擬合值與標準誤差)
+        PARAM_CONFIG.forEach(cfg => {
+          const pInfo = res.params[cfg.key];
+          document.getElementById(`res_val_${cfg.key}`).innerText = `${pInfo.value.toFixed(6)}`;
+          document.getElementById(`res_err_${cfg.key}`).innerText = pInfo.stderr !== null ? `${pInfo.stderr.toFixed(4)}` : "N/A";
+        });
+
+        // 填入統計方塊
+        let statsReport = `模型維度: ${payload.dim}\n` +
+          `擬合是否成功: 是\n` +
+          `R^2 = ${res.r2.toFixed(6)}\n` +
+          `Reduced chi-square = ${res.redchi.toExponential(4)}\n` +
+          `殘差平方和 (SSR) = ${res.ss_res.toExponential(4)}\n` +
+          `基態(n=1)激子束縛能 Eb(n=1) = ${res.eb_str} = ${res.Eb_n1.toFixed(6)} eV\n` +
+          `基態(n=1)激子峰理論位置 Eex(n=1) = Eg-Eb(n=1) = ${res.Eex_n1.toFixed(6)} eV\n` +
+          `擬合範圍: ${emin.toFixed(4)} - ${emax.toFixed(4)} eV, 點數: ${res.E_used.length}\n` +
+          `lmfit 訊息: ${res.message}`;
+        document.getElementById("statsTextBox").innerText = statsReport;
+
+        // 繪製四線圖
+        const tExp = { x: fullData.E, y: fullData.A, mode: "markers", name: "Experimental data", marker: { color: "#000", size: 3.5 } };
+        const tExc = { x: res.E_used, y: res.exc, mode: "lines", name: "Excitonic absorption α_ext", line: { color: "#f97316", dash: "dash", width: 2 } };
+        const tCont = { x: res.E_used, y: res.cont, mode: "lines", name: "Continuum absorption α_cont", line: { color: "#10b981", dash: "dashdot", width: 2 } };
+        const tTot = { x: res.E_used, y: res.tot, mode: "lines", name: "Total fit", line: { color: "#ef4444", width: 2.2 } };
+
+        Plotly.react("plotDiv", [tExp, tExc, tCont, tTot], getLayout());
+        setupPlotlyEvents();
+
+        lastFitResults = {
+          res, statsReport, emin, emax, filename: fullData.filename
+        };
+
+        document.getElementById("btnExportCurves").disabled = false;
+        document.getElementById("btnExportParams").disabled = false;
+        document.getElementById("statusBadge").innerText = "擬合完成";
+        document.getElementById("statusBadge").className = "text-xs bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200 font-semibold";
+
+      } catch (err) {
+        alert("擬合發生錯誤: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "開始擬合 (Fit)";
+      }
     }
 
-    // ================= 匯出檔案 (1:1 格式) =================
     function exportCurvesFile() {
       if (!lastFitResults) return;
       let lines = ["Energy(eV)\tAbsorbance_exp\tFit_Total\tExcitonic_absorption\tContinuum_absorption"];
-      const { subE, subA, totList, excList, contList } = lastFitResults;
-      for (let i = 0; i < subE.length; i++) {
-        lines.push(`${subE[i].toFixed(8)}\t${subA[i].toFixed(8)}\t${totList[i].toFixed(8)}\t${excList[i].toFixed(8)}\t${contList[i].toFixed(8)}`);
+      const { res } = lastFitResults;
+      for (let i = 0; i < res.E_used.length; i++) {
+        lines.push(`${res.E_used[i].toFixed(8)}\t${res.A_used[i].toFixed(8)}\t${res.tot[i].toFixed(8)}\t${res.exc[i].toFixed(8)}\t${res.cont[i].toFixed(8)}`);
       }
       downloadBlob(lines.join("\n"), "fit_curves.txt");
     }
